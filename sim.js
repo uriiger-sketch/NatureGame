@@ -551,14 +551,6 @@ class Renderer {
     this.offsetX = 0;
     this.offsetY = 0;
 
-    // Zoom state (smooth animated)
-    this.zoom       = 1;
-    this.targetZoom = 1;
-    this.zoomCX     = P.worldSize / 2;
-    this.zoomCY     = P.worldSize / 2;
-    this.targetCX   = P.worldSize / 2;
-    this.targetCY   = P.worldSize / 2;
-
     this._lastSel = -1;
     this._pulseT  = 0;  // for selection pulse animation
   }
@@ -588,22 +580,13 @@ class Renderer {
     ctx.setTransform(d, 0, 0, d, 0, 0);
   }
 
-  // World-to-canvas (before zoom transform; used inside save/restore block)
   _wx(x) { return this.offsetX + x * this.scale; }
   _wy(y) { return this.offsetY + (P.worldSize - y) * this.scale; }
 
-  // Canvas logical → world (accounting for zoom)
   canvasToWorld(cx, cy) {
-    let lx = cx, ly = cy;
-    if (this.zoom > 1.01) {
-      const wcx = this._wx(this.zoomCX);
-      const wcy = this._wy(this.zoomCY);
-      lx = (cx - wcx) / this.zoom + wcx;
-      ly = (cy - wcy) / this.zoom + wcy;
-    }
     return {
-      x: (lx - this.offsetX) / this.scale,
-      y: P.worldSize - (ly - this.offsetY) / this.scale,
+      x: (cx - this.offsetX) / this.scale,
+      y: P.worldSize - (cy - this.offsetY) / this.scale,
     };
   }
 
@@ -613,24 +596,10 @@ class Renderer {
     const cw  = this.wCanvas.clientWidth;
     const ch  = this.wCanvas.clientHeight;
 
-    // Smooth zoom/pan animation
-    this.zoom   += (this.targetZoom - this.zoom)   * 0.12;
-    this.zoomCX += (this.targetCX   - this.zoomCX) * 0.12;
-    this.zoomCY += (this.targetCY   - this.zoomCY) * 0.12;
-    if (Math.abs(this.zoom - this.targetZoom) < 0.005) this.zoom = this.targetZoom;
-
     ctx.fillStyle = '#050509';
     ctx.fillRect(0, 0, cw, ch);
 
     ctx.save();
-    // Apply zoom centered on zoomC
-    if (this.zoom > 1.001) {
-      const cx = this._wx(this.zoomCX);
-      const cy = this._wy(this.zoomCY);
-      ctx.translate(cx, cy);
-      ctx.scale(this.zoom, this.zoom);
-      ctx.translate(-cx, -cy);
-    }
 
     // Food (batched arc path)
     ctx.fillStyle = '#2ecc40';
@@ -940,35 +909,25 @@ class UIController {
     this._hint       = document.getElementById('hint');
     this._hintShown  = false;
     this._brainLabels = [0,1,2].map(i => document.getElementById(`brainLabel${i}`));
-    this._zoomBadge  = document.getElementById('zoomBadge');
 
     const wc = renderer.wCanvas;
 
-    // Tap to select creature (and zoom)
+    // Tap to select creature
     wc.addEventListener('touchstart', e => {
-      if (e.touches.length === 2) {
-        this._pinchStart(e);
-        e.preventDefault();
-        return;
-      }
       e.preventDefault();
+      if (e.touches.length !== 1) return;
       const t    = e.changedTouches[0];
       const rect = wc.getBoundingClientRect();
       this._onTap(renderer.canvasToWorld(t.clientX - rect.left, t.clientY - rect.top));
     }, { passive: false });
 
-    wc.addEventListener('touchmove', e => {
-      if (e.touches.length === 2) { this._pinchMove(e); e.preventDefault(); }
-    }, { passive: false });
+    wc.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
 
     wc.addEventListener('click', e => {
       const rect = wc.getBoundingClientRect();
       this._onTap(renderer.canvasToWorld(e.clientX - rect.left, e.clientY - rect.top));
     });
 
-    // Pinch state
-    this._pinchDist0 = 0;
-    this._pinchZoom0 = 1;
 
     // Creature panel close
     document.getElementById('closePanelBtn').addEventListener('click', () => this._closePanel());
@@ -1019,9 +978,6 @@ class UIController {
       const seed  = parseInt(document.getElementById('cfgSeed').value);
       configPanel.classList.remove('open');
       this._closePanel();
-      renderer.zoom = 1; renderer.targetZoom = 1;
-      renderer.zoomCX = P.worldSize / 2; renderer.targetCX = P.worldSize / 2;
-      renderer.zoomCY = P.worldSize / 2; renderer.targetCY = P.worldSize / 2;
       initWorld(seed);
       renderer.resize();
     });
@@ -1049,37 +1005,9 @@ class UIController {
   }
 
   get paused()          { return this._paused; }
-  get ticksPerFrame()   {
+  get ticksPerFrame() {
     const v = document.getElementById('speedSlider').value | 0;
     return SPEED_STEPS[v];
-  }
-
-  _pinchStart(e) {
-    const dx = e.touches[0].clientX - e.touches[1].clientX;
-    const dy = e.touches[0].clientY - e.touches[1].clientY;
-    this._pinchDist0 = Math.hypot(dx, dy);
-    this._pinchZoom0 = this.renderer.zoom;
-  }
-
-  _pinchMove(e) {
-    const dx   = e.touches[0].clientX - e.touches[1].clientX;
-    const dy   = e.touches[0].clientY - e.touches[1].clientY;
-    const dist = Math.hypot(dx, dy);
-    if (this._pinchDist0 < 1) return;
-    const newZoom = Math.max(1, Math.min(10, this._pinchZoom0 * dist / this._pinchDist0));
-    this.renderer.targetZoom = newZoom;
-    this.renderer.zoom       = newZoom;
-    this._updateZoomBadge(newZoom);
-  }
-
-  _updateZoomBadge(z) {
-    const badge = this._zoomBadge;
-    if (z <= 1.05) {
-      badge.classList.remove('visible');
-    } else {
-      badge.textContent = `${z.toFixed(1)}×`;
-      badge.classList.add('visible');
-    }
   }
 
   _onTap({ x, y }) {
@@ -1099,12 +1027,6 @@ class UIController {
     this.selectedIdx = bestK;
     if (bestK >= 0) {
       this._panel.classList.add('open');
-      // Zoom in on selected creature
-      const c = creatures[bestK];
-      this.renderer.targetZoom = 4;
-      this.renderer.targetCX   = c.posX;
-      this.renderer.targetCY   = c.posY;
-      this._updateZoomBadge(4);
     } else {
       this._closePanel();
     }
@@ -1113,8 +1035,6 @@ class UIController {
   _closePanel() {
     this._panel.classList.remove('open');
     this.selectedIdx = -1;
-    this.renderer.targetZoom = 1;
-    this._updateZoomBadge(1);
   }
 
   updateHeader(nHerb, nCarn) {
@@ -1146,15 +1066,6 @@ class UIController {
     this._panelStats.innerHTML =
       `Energy: ${c.energy.toFixed(1)}  ·  Fitness: ${c.fitness.toFixed(0)}  ·  Age: ${c.age}<br>` +
       `Speed: ${speed}  ·  Brain: [${layerStr}]`;
-  }
-
-  // ── Follow selected creature with zoom ────────────────────────────────
-  followSelected() {
-    if (this.selectedIdx >= 0 && this.selectedIdx < creatures.length) {
-      const c = creatures[this.selectedIdx];
-      this.renderer.targetCX = c.posX;
-      this.renderer.targetCY = c.posY;
-    }
   }
 
   _save() {
@@ -1252,14 +1163,12 @@ class GameLoop {
       if (popCount < POP_MAX) popCount++;
 
       this.ui.updateHeader(nHerb, nCarn);
-      this.ui.followSelected();  // keep zoom centered on creature
     }
 
     // Clamp selected index if creature died
     if (this.ui.selectedIdx >= creatures.length) {
       this.ui.selectedIdx = -1;
       document.getElementById('creaturePanel').classList.remove('open');
-      this.renderer.targetZoom = 1;
     }
 
     const topIdxs = topByFitness(3);
