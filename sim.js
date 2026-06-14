@@ -816,24 +816,31 @@ class Renderer {
 
     const xPos = layers.map((_, li) => xSpacing * (li + 1));
 
-    // draw edges
+    // draw edges (grouped by color to reduce stroke calls)
     ctx.lineWidth = 0.8;
     const MAX_NODES_FOR_LINES = 20;
     for (let li = 0; li < nLayers - 1; li++) {
-      const Wmat = W[li === 0 ? 0 : li];  // weight matrix between layer li and li+1
-      // W[0] is input→hidden[0], W[1] hidden[0]→hidden[1], ..., W[L] hidden[L-1]→output
       const srcN = layers[li];
       const dstN = layers[li + 1];
       if (srcN > MAX_NODES_FOR_LINES || dstN > MAX_NODES_FOR_LINES) continue;
+      // bucket edges by greyscale level
+      const buckets = {};
       for (let s = 0; s < srcN; s++) {
         for (let dst = 0; dst < dstN; dst++) {
-          const w_val = li < W.length ? W[li].get(dst, s) : 0;
-          ctx.strokeStyle = weightColor(w_val);
-          ctx.beginPath();
-          ctx.moveTo(xPos[li], yPos[li][s]);
-          ctx.lineTo(xPos[li + 1], yPos[li + 1][dst]);
-          ctx.stroke();
+          const wv = W[li].get(dst, s);
+          const col = weightColor(wv);
+          if (!buckets[col]) buckets[col] = [];
+          buckets[col].push([xPos[li], yPos[li][s], xPos[li + 1], yPos[li + 1][dst]]);
         }
+      }
+      for (const [col, segs] of Object.entries(buckets)) {
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        for (const [x0, y0, x1, y1] of segs) {
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+        }
+        ctx.stroke();
       }
     }
 
