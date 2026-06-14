@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BibitesSim">
+  <meta name="theme-color" content="#080810">
+  <title>BibitesSim</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html {
+      height: 100%;
+      height: -webkit-fill-available;
+    }
+
+    body {
+      margin: 0; padding: 0;
+      width: 100%;
+      height: 100dvh;
+      min-height: -webkit-fill-available;
+      background: #080810;
+      color: #e0e0e0;
+      font-family: -apple-system, system-ui, 'SF Pro Display', sans-serif;
+      overscroll-behavior: none;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      padding-top: env(safe-area-inset-top);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    #header {
+      flex: 0 0 auto;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      background: rgba(8,8,20,0.92);
+      border-bottom: 1px solid #1a1a30;
+      font-size: clamp(11px, 3vw, 14px);
+      letter-spacing: 0.02em;
+      z-index: 10;
+      flex-shrink: 0;
+    }
+
+    #header .left { color: #7af; }
+    #header .mid  { color: #aaa; font-size: 0.9em; }
+    #header .right { display:flex; gap:8px; }
+
+    .hbtn {
+      background: #1a1a30;
+      border: 1px solid #2a2a50;
+      color: #99aadd;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: manipulation;
+    }
+    .hbtn:active { background: #2a2a50; }
+
+    #worldWrap {
+      flex: 0 0 auto;
+      position: relative;
+      width: 100%;
+      background: #060608;
+    }
+
+    #sidebar {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    #worldCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      transform: translate3d(0,0,0);
+    }
+
+    #popCanvas {
+      flex: 0 0 60px;
+      display: block;
+      width: 100%;
+      background: #06060c;
+      border-top: 1px solid #141428;
+      border-bottom: 1px solid #141428;
+      touch-action: none;
+    }
+
+    #brainsRow {
+      flex: 1 1 0;
+      display: flex;
+      gap: 3px;
+      padding: 4px;
+      background: #060608;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .brainWrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: #0a0a18;
+      border: 1px solid #1a1a30;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .brainLabel {
+      font-size: 10px;
+      color: #668;
+      text-align: center;
+      padding: 2px 0;
+      flex-shrink: 0;
+      border-bottom: 1px solid #111128;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding: 2px 4px;
+    }
+
+    .brainCanvas {
+      display: block;
+      flex: 1 1 0;
+      width: 100%;
+      min-height: 0;
+    }
+
+    /* Slide-up creature panel */
+    #creaturePanel {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: 58%;
+      background: #0e0e1e;
+      border-top: 1.5px solid #2a2a50;
+      border-radius: 14px 14px 0 0;
+      display: flex;
+      flex-direction: column;
+      padding: 0 14px;
+      padding-bottom: calc(10px + env(safe-area-inset-bottom));
+      transform: translateY(105%);
+      transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+      will-change: transform;
+      z-index: 200;
+    }
+
+    #creaturePanel.open { transform: translateY(0); }
+
+    #panelHandle {
+      width: 36px; height: 4px;
+      background: #333;
+      border-radius: 2px;
+      margin: 8px auto 6px;
+      flex-shrink: 0;
+    }
+
+    #panelTitle {
+      font-size: 12px;
+      color: #99aadd;
+      text-align: center;
+      margin-bottom: 6px;
+      flex-shrink: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #brainDetail {
+      display: block;
+      flex: 1 1 0;
+      width: 100%;
+      min-height: 0;
+      background: #0a0a16;
+      border-radius: 6px;
+    }
+
+    #panelStats {
+      font-size: 11px;
+      color: #778;
+      text-align: center;
+      margin-top: 6px;
+      flex-shrink: 0;
+      line-height: 1.5;
+    }
+
+    #closePanelBtn {
+      position: absolute;
+      top: 12px; right: 14px;
+      background: none;
+      border: none;
+      color: #556;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      touch-action: manipulation;
+    }
+
+    #main {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* landscape tweaks */
+    @media (orientation: landscape) {
+      #main { flex-direction: row; }
+      #worldWrap { flex: 0 0 58%; max-width: 58%; height: 100%; }
+      #sidebar { flex: 1 1 0; height: 100%; }
+      /* disable JS square-sizing in landscape */
+      #worldWrap[data-landscape] { height: 100% !important; }
+    }
+  </style>
+</head>
+<body>
+
+<header id="header">
+  <span class="left" id="tickDisplay">Tick 0</span>
+  <span class="mid" id="popDisplay">H:30 C:6</span>
+  <span class="right">
+    <button class="hbtn" id="pauseBtn">Pause</button>
+    <button class="hbtn" id="saveBtn">Save</button>
+    <button class="hbtn" id="loadBtn">Load</button>
+  </span>
+</header>
+
+<div id="main">
+<div id="worldWrap">
+  <canvas id="worldCanvas"></canvas>
+</div>
+
+<div id="sidebar">
+  <canvas id="popCanvas"></canvas>
+  <div id="brainsRow">
+    <div class="brainWrap">
+      <div class="brainLabel" id="brainLabel0">Fit #1</div>
+      <canvas class="brainCanvas" id="brain0"></canvas>
+    </div>
+    <div class="brainWrap">
+      <div class="brainLabel" id="brainLabel1">Fit #2</div>
+      <canvas class="brainCanvas" id="brain1"></canvas>
+    </div>
+    <div class="brainWrap">
+      <div class="brainLabel" id="brainLabel2">Fit #3</div>
+      <canvas class="brainCanvas" id="brain2"></canvas>
+    </div>
+  </div>
+</div>
+</div><!-- #main -->
+
+<div id="creaturePanel">
+  <div id="panelHandle"></div>
+  <button id="closePanelBtn">✕</button>
+  <div id="panelTitle">Creature Info</div>
+  <canvas id="brainDetail"></canvas>
+  <div id="panelStats"></div>
+</div>
+
+<input type="file" id="fileInput" accept=".json" style="display:none">
+
+<script src="sim.js"></script>
+</body>
+</html>
