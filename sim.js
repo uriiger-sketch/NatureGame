@@ -1,8 +1,9 @@
 'use strict';
+
 // ─── Seeded PRNG (mulberry32) ──────────────────────────────────────────────
 function makePRNG(seed) {
   let s = seed >>> 0;
-  return function() {
+  return function () {
     s = (s + 0x6D2B79F5) >>> 0;
     let t = Math.imul(s ^ (s >>> 15), 1 | s);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
@@ -13,7 +14,6 @@ function makePRNG(seed) {
 let rng = makePRNG(1);
 
 function randn() {
-  // Box-Muller
   const u1 = Math.max(1e-10, rng());
   const u2 = rng();
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
@@ -21,31 +21,22 @@ function randn() {
 
 // ─── Math helpers ──────────────────────────────────────────────────────────
 function torus(x, w) {
-  // signed toroidal delta: mod(x + w/2, w) - w/2
+  // signed toroidal delta: equivalent to MATLAB mod(x + w/2, w) - w/2
   return ((x + w * 0.5) % w + w) % w - w * 0.5;
 }
-
-function wrapToPi(a) {
-  return Math.atan2(Math.sin(a), Math.cos(a));
-}
-
+function wrapToPi(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
 function hypot2(dx, dy) { return Math.sqrt(dx * dx + dy * dy); }
-
-function mod(x, w) { return ((x % w) + w) % w; }
+function posmod(x, w) { return ((x % w) + w) % w; }
 
 // ─── Colour helpers ────────────────────────────────────────────────────────
 function hsvToRgb(h, s, v) {
   h = ((h % 1) + 1) % 1;
-  const i = Math.floor(h * 6);
-  const f = h * 6 - i;
+  const i = Math.floor(h * 6), f = h * 6 - i;
   const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
-  const tbl = [[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]];
-  const [r,g,b] = tbl[i % 6];
-  return [r, g, b];
+  return [[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][i % 6];
 }
 
 function weightColor(w) {
-  // map [-1,1] → greyscale
   const g = Math.round(((Math.max(-1, Math.min(1, w)) + 1) / 2) * 255);
   return `rgb(${g},${g},${g})`;
 }
@@ -55,26 +46,20 @@ class Matrix {
   constructor(rows, cols, data) {
     this.rows = rows;
     this.cols = cols;
-    this.data = data instanceof Float64Array ? data : new Float64Array(rows * cols);
-    if (data && !(data instanceof Float64Array)) {
-      // init from nested array
-      for (let r = 0; r < rows; r++)
-        for (let c = 0; c < cols; c++)
-          this.data[r * cols + c] = data[r][c];
-    }
+    this.data = (data instanceof Float64Array)
+      ? data
+      : new Float64Array(rows * cols);
   }
 
   static zeros(rows, cols) { return new Matrix(rows, cols); }
 
-  static randn(rows, cols, scale = 1) {
+  static randn(rows, cols, scale) {
     const m = new Matrix(rows, cols);
-    for (let i = 0; i < m.data.length; i++) m.data[i] = randn() * scale;
+    for (let i = 0; i < m.data.length; i++) m.data[i] = randn() * (scale ?? 1);
     return m;
   }
 
-  clone() {
-    return new Matrix(this.rows, this.cols, new Float64Array(this.data));
-  }
+  clone() { return new Matrix(this.rows, this.cols, new Float64Array(this.data)); }
 
   get(r, c) { return this.data[r * this.cols + c]; }
   set(r, c, v) { this.data[r * this.cols + c] = v; }
@@ -84,12 +69,14 @@ class Matrix {
   }
 
   meanAll() {
+    if (!this.data.length) return 0;
     let s = 0;
     for (let i = 0; i < this.data.length; i++) s += this.data[i];
     return s / this.data.length;
   }
 
   stdAll() {
+    if (this.data.length < 2) return 0;
     const mu = this.meanAll();
     let s = 0;
     for (let i = 0; i < this.data.length; i++) s += (this.data[i] - mu) ** 2;
@@ -103,50 +90,45 @@ class Matrix {
   }
 
   frobenius(other) {
-    // zero-pad to common size and compute ||A-B||_F
     const R = Math.max(this.rows, other.rows);
     const C = Math.max(this.cols, other.cols);
     let s = 0;
-    for (let r = 0; r < R; r++) {
+    for (let r = 0; r < R; r++)
       for (let c = 0; c < C; c++) {
         const a = (r < this.rows && c < this.cols) ? this.get(r, c) : 0;
         const b = (r < other.rows && c < other.cols) ? other.get(r, c) : 0;
         s += (a - b) ** 2;
       }
-    }
     return Math.sqrt(s);
   }
 
-  addRow(scale = 0.3) {
-    // append one row of randn values
-    const newData = new Float64Array((this.rows + 1) * this.cols);
-    newData.set(this.data);
-    for (let c = 0; c < this.cols; c++) newData[this.rows * this.cols + c] = randn() * scale;
+  addRow(scale) {
+    scale = scale ?? 0.3;
+    const nd = new Float64Array((this.rows + 1) * this.cols);
+    nd.set(this.data);
+    for (let c = 0; c < this.cols; c++) nd[this.rows * this.cols + c] = randn() * scale;
     this.rows++;
-    this.data = newData;
+    this.data = nd;
   }
 
-  addCol(scale = 0.3) {
-    // append one column of randn values
-    const newData = new Float64Array(this.rows * (this.cols + 1));
+  addCol(scale) {
+    scale = scale ?? 0.3;
+    const nc = this.cols + 1;
+    const nd = new Float64Array(this.rows * nc);
     for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) newData[r * (this.cols + 1) + c] = this.get(r, c);
-      newData[r * (this.cols + 1) + this.cols] = randn() * scale;
+      for (let c = 0; c < this.cols; c++) nd[r * nc + c] = this.get(r, c);
+      nd[r * nc + this.cols] = randn() * scale;
     }
-    this.cols++;
-    this.data = newData;
+    this.cols = nc;
+    this.data = nd;
   }
 
-  toJSON() {
-    return { rows: this.rows, cols: this.cols, data: Array.from(this.data) };
-  }
+  toJSON() { return { rows: this.rows, cols: this.cols, data: Array.from(this.data) }; }
 
-  static fromJSON(obj) {
-    return new Matrix(obj.rows, obj.cols, new Float64Array(obj.data));
-  }
+  static fromJSON(o) { return new Matrix(o.rows, o.cols, new Float64Array(o.data)); }
 }
 
-// multiply Matrix by Float64Array column vector, apply tanh
+// matrix × column vector, applying tanh to output
 function matMulTanh(M, x) {
   const out = new Float64Array(M.rows);
   for (let r = 0; r < M.rows; r++) {
@@ -159,59 +141,24 @@ function matMulTanh(M, x) {
 
 // ─── Simulation parameters ─────────────────────────────────────────────────
 const P = {
-  N0: 30,
-  Npred: 6,
-  worldSize: 120,
-  foodCount: 80,
-  foodEnergy: 22,
-  predEnergyGain: -10,   // negative — predator loses extra energy per kill
-  bodyRadius: 1.4,
-  dt: 0.2,               // 1/5
-  maxSpeed: 10,
-  energyDecay: 0.1,
-  moveCost: 0.05,
-  predMoveCost: 0.07,
-  reproEnergy: 100,
-  mutationSigma: 0.3,
-  nnHidden: 8,
-  graphicsStride: 2,
+  N0: 30, Npred: 6, worldSize: 120,
+  foodCount: 80, foodEnergy: 22,
+  bodyRadius: 1.4, dt: 0.2, maxSpeed: 10,
+  energyDecay: 0.1, moveCost: 0.05, predMoveCost: 0.07,
+  reproEnergy: 100, carnReproEnergy: 80, mutationSigma: 0.3, nnHidden: 8,
   senseRadius: 25,
-  addLayerProb: 0.18,
-  delLayerProb: 0.02,
-  addNeuronProb: 0.22,
-  maxHiddenLayers: 5,
-  maxNeurons: 70,
-  fitFood: 5,
-  fitTick: 0.01,
-  fitRepro: 20,
-  maxAgeHerb: 1500,
-  maxAgeCarn: 500,
-  modeThresh: 0.10,
-  nInput: 5,
-  nOutput: 3,
+  addLayerProb: 0.18, delLayerProb: 0.02, addNeuronProb: 0.22,
+  maxHiddenLayers: 5, maxNeurons: 70,
+  fitFood: 5, fitTick: 0.01, fitRepro: 20,
+  maxAgeHerb: 1500, maxAgeCarn: 3000, modeThresh: 0.10,
+  nInput: 5, nOutput: 3,
 };
 
-// ─── Creature factory ──────────────────────────────────────────────────────
-function makeCreature(posX, posY, W, type, lineage, energy) {
-  const c = {
-    posX, posY,
-    velX: 0, velY: 0,
-    angle: rng() * 2 * Math.PI,
-    W,                           // Array<Matrix>
-    energy: energy ?? (55 + rng() * 12),
-    act: new Float64Array(P.nOutput),
-    color: [1, 1, 1],
-    age: 0,
-    fitness: 30,
-    type,                        // 'herb' | 'carn'
-    busyTime: 0,
-    fadeTick: 0,
-    fadeInit: 0,
-    immature: 0,
-    lineage,
-  };
-  c.color = type === 'carn' ? [1, 0, 0] : geneColor(c);
-  return c;
+// ─── Creature helpers ──────────────────────────────────────────────────────
+function geneColor(cre) {
+  const h = ((cre.W[0].meanAll() * 0.4 + 0.5) % 1 + 1) % 1;
+  const s = 0.6 + 0.3 / (1 + Math.exp(-cre.W[cre.W.length - 1].stdAll() * 2));
+  return hsvToRgb(h, s, 1);
 }
 
 function makeInitBrain() {
@@ -221,103 +168,113 @@ function makeInitBrain() {
   ];
 }
 
-function geneColor(cre) {
-  const W1 = cre.W[0];
+function makeCreature(posX, posY, W, type, lineage, energy) {
+  const c = {
+    posX, posY, velX: 0, velY: 0,
+    angle: rng() * 2 * Math.PI,
+    W,
+    energy: (energy !== undefined) ? energy : 55 + rng() * 12,
+    act: new Float64Array(P.nOutput),
+    color: [1, 1, 1],
+    age: 0, fitness: 30,
+    type,
+    busyTime: 0, fadeTick: 0, fadeInit: 0, immature: 0,
+    lineage,
+  };
+  c.color = type === 'carn' ? [1, 0.1, 0.1] : geneColor(c);
+  return c;
+}
+
+function polyVerts(cre) {
   const Wlast = cre.W[cre.W.length - 1];
-  const h = ((W1.meanAll() * 0.4 + 0.5) % 1 + 1) % 1;
-  const s = 0.6 + 0.3 / (1 + Math.exp(-Wlast.stdAll() * 2));
-  return hsvToRgb(h, s, 1);
+  const sig = Math.tanh(Wlast.sumSign() / (Wlast.data.length || 1));
+  const ns  = Math.max(3, Math.min(8, 3 + Math.round((sig + 1) * 2.5)));
+  const sG  = 0.8 + 0.6 / (1 + Math.exp(-Wlast.stdAll() * 3));
+  let R = P.bodyRadius * sG;
+  if (cre.fadeTick > 0 && cre.fadeInit > 0)      R *= cre.fadeTick / cre.fadeInit;
+  else if (cre.fadeInit > 0)                       R = 0;
+  const vx = new Array(ns), vy = new Array(ns);
+  for (let i = 0; i < ns; i++) {
+    const th = (i / ns) * 2 * Math.PI + cre.angle;
+    vx[i] = cre.posX + R * Math.cos(th);
+    vy[i] = cre.posY + R * Math.sin(th);
+  }
+  return { vx, vy, R };
 }
 
 // ─── World state ───────────────────────────────────────────────────────────
 let creatures = [];
-let food = [];   // Array of {x, y}
-let tick = 0;
-let baseW = null;
-let rngSeed = 1;
+let food      = [];  // [{x, y}]
+let tick      = 0;
+let baseW     = null;
+let rngSeed   = 1;
 
-const POP_HISTORY_MAX = 1000;
-let popT    = new Float32Array(POP_HISTORY_MAX);
-let popHerb = new Float32Array(POP_HISTORY_MAX);
-let popCarn = new Float32Array(POP_HISTORY_MAX);
-let popHead = 0;
-let popCount = 0;
+const POP_MAX  = 1000;
+const popHerb  = new Int16Array(POP_MAX);
+const popCarn  = new Int16Array(POP_MAX);
+let   popHead  = 0;
+let   popCount = 0;
 
 function initWorld(seed) {
   rngSeed = seed ?? 1;
-  rng = makePRNG(rngSeed);
-  tick = 0;
+  rng     = makePRNG(rngSeed);
+  tick    = 0;
   popHead = 0; popCount = 0;
-
   creatures = [];
-  for (let k = 0; k < P.N0; k++) {
-    const W = makeInitBrain();
-    creatures.push(makeCreature(rng() * P.worldSize, rng() * P.worldSize, W, 'herb', k));
-  }
+  for (let k = 0; k < P.N0; k++)
+    creatures.push(makeCreature(rng() * P.worldSize, rng() * P.worldSize, makeInitBrain(), 'herb', k));
   for (let k = 0; k < P.Npred; k++) {
-    const idx = P.N0 + k;
-    const W = makeInitBrain();
-    const c = makeCreature(rng() * P.worldSize, rng() * P.worldSize, W, 'carn', idx, 60 + rng() * 20);
-    creatures.push(c);
+    const i = P.N0 + k;
+    creatures.push(makeCreature(rng() * P.worldSize, rng() * P.worldSize, makeInitBrain(), 'carn', i, 60 + rng() * 20));
   }
-
   baseW = creatures[0].W.map(m => m.clone());
-
-  food = [];
+  food  = [];
   spawnFood();
 }
 
 function spawnFood() {
-  while (food.length < P.foodCount) {
+  while (food.length < P.foodCount)
     food.push({ x: rng() * P.worldSize, y: rng() * P.worldSize });
-  }
 }
 
-// ─── Neural network forward pass ───────────────────────────────────────────
+// ─── Neural network ────────────────────────────────────────────────────────
 function nnForward(W, inp) {
   let x = inp;
   for (let l = 0; l < W.length - 1; l++) x = matMulTanh(W[l], x);
   return matMulTanh(W[W.length - 1], x);
 }
 
-// ─── Mutation ──────────────────────────────────────────────────────────────
+// ─── Structural mutation ───────────────────────────────────────────────────
 function mutateNetworkStructure(W) {
-  const inSize = P.nInput;
   const outSize = P.nOutput;
-  let L = W.length - 1; // number of hidden layers
+  let L = W.length - 1;  // hidden layer count
 
-  // maybe add hidden layer (insert before output)
+  // maybe add a hidden layer before output
   if (L < P.maxHiddenLayers && rng() < P.addLayerProb) {
-    const nPrev = W[W.length - 2].rows; // rows of last hidden
-    const nNew = Math.max(2, Math.min(P.maxNeurons, Math.round(nPrev * (0.7 + 0.6 * rng()))));
-    const Wnew  = Matrix.randn(nNew, nPrev, 0.3);
-    const Wout  = Matrix.randn(outSize, nNew, 0.3);
-    W = [...W.slice(0, W.length - 1), Wnew, Wout];
+    const nPrev = W[W.length - 2].rows;
+    const nNew  = Math.max(2, Math.min(P.maxNeurons, Math.round(nPrev * (0.7 + 0.6 * rng()))));
+    W = [...W.slice(0, W.length - 1), Matrix.randn(nNew, nPrev, 0.3), Matrix.randn(outSize, nNew, 0.3)];
     L++;
   }
 
-  // maybe delete one hidden
+  // maybe delete a hidden layer
   if (L > 1 && rng() < P.delLayerProb) {
-    const kill = Math.floor(rng() * L); // which hidden to kill (0-indexed among hiddens)
-    const prevCols = kill === 0 ? inSize : W[kill - 1].rows;
-    if (kill === L - 1) {
-      // killing last hidden → output attaches to prev
+    const kill     = Math.floor(rng() * L);
+    const prevCols = kill === 0 ? P.nInput : W[kill - 1].rows;
+    if (kill === L - 1)
       W[W.length - 1] = Matrix.randn(outSize, prevCols, 0.3);
-    } else {
-      // killing middle hidden → next layer gets prev cols
-      const nextRows = W[kill + 1].rows;
-      W[kill + 1] = Matrix.randn(nextRows, prevCols, 0.3);
-    }
+    else
+      W[kill + 1] = Matrix.randn(W[kill + 1].rows, prevCols, 0.3);
     W = [...W.slice(0, kill), ...W.slice(kill + 1)];
     L--;
   }
 
-  // maybe grow a neuron in a random hidden layer
+  // maybe add a neuron to a random hidden layer
   if (L >= 1 && rng() < P.addNeuronProb) {
-    const which = Math.floor(rng() * L); // which hidden layer (0-indexed)
+    const which = Math.floor(rng() * L);
     if (W[which].rows < P.maxNeurons) {
-      W[which].addRow(0.3);          // new hidden neuron
-      W[which + 1].addCol(0.3);     // downstream layer gains a new input column
+      W[which].addRow(0.3);
+      W[which + 1].addCol(0.3);
     }
   }
 
@@ -329,158 +286,150 @@ function simStep() {
   const n = creatures.length;
   if (n === 0) { spawnFood(); return; }
 
-  // ── extract state into flat arrays ────────────────────────────────────
-  const posX = new Float64Array(n);
-  const posY = new Float64Array(n);
-  const velX = new Float64Array(n);
-  const velY = new Float64Array(n);
-  const ang  = new Float64Array(n);
-  const E    = new Float64Array(n);
-  const fit  = new Float64Array(n);
-  const age  = new Float64Array(n);
-  const busy = new Float64Array(n);
-  const fade = new Float64Array(n);
+  // extract state
+  const posX     = new Float64Array(n);
+  const posY     = new Float64Array(n);
+  const velX     = new Float64Array(n);
+  const velY     = new Float64Array(n);
+  const ang      = new Float64Array(n);
+  const E        = new Float64Array(n);
+  const fit      = new Float64Array(n);
+  const age      = new Float64Array(n);
+  const busy     = new Float64Array(n);
+  const fade     = new Float64Array(n);
   const fadeInit = new Float64Array(n);
-  const immature = new Float64Array(n);
-  const isCarn = new Uint8Array(n);
-  const lineage = new Int32Array(n);
+  const imm      = new Float64Array(n);
+  const isCarn   = new Uint8Array(n);
+  const lineage  = new Int32Array(n);
 
   for (let k = 0; k < n; k++) {
     const c = creatures[k];
     posX[k] = c.posX; posY[k] = c.posY;
     velX[k] = c.velX; velY[k] = c.velY;
     ang[k]  = c.angle;
-    E[k]    = c.energy;
-    fit[k]  = c.fitness;
-    age[k]  = c.age;
-    busy[k] = c.busyTime;
-    fade[k] = c.fadeTick;
-    fadeInit[k] = c.fadeInit;
-    immature[k] = c.immature;
+    E[k]    = c.energy;   fit[k] = c.fitness;
+    age[k]  = c.age;      busy[k] = c.busyTime;
+    fade[k] = c.fadeTick; fadeInit[k] = c.fadeInit;
+    imm[k]  = c.immature;
     isCarn[k] = c.type === 'carn' ? 1 : 0;
-    lineage[k] = c.lineage;
+    lineage[k] = c.lineage | 0;
   }
 
-  // ── age, fitness, timers ───────────────────────────────────────────────
+  // tick timers
   for (let k = 0; k < n; k++) {
     age[k]++;
     fit[k] += P.fitTick;
     if (busy[k] > 0) busy[k]--;
     if (fade[k] > 0) fade[k]--;
-    if (immature[k] > 0) immature[k]--;
+    if (imm[k]  > 0) imm[k]--;
   }
 
-  const WS = P.worldSize;
-  const SR = P.senseRadius;
+  const WS = P.worldSize, SR = P.senseRadius;
 
-  // ── sensing ────────────────────────────────────────────────────────────
+  // ── sense ──────────────────────────────────────────────────────────────
   const dx = new Float64Array(n);
   const dy = new Float64Array(n);
   const d  = new Float64Array(n).fill(SR);
 
-  // herbivores → nearest food; flee if predator closer
+  // herbivores: toward food, or flee nearest predator if closer
   for (let h = 0; h < n; h++) {
     if (isCarn[h]) continue;
-    // nearest food
-    let bestFoodD2 = Infinity, bfx = 0, bfy = 0;
+
+    let foodD2 = Infinity, fdx = 0, fdy = 0;
     for (let f = 0; f < food.length; f++) {
       const fx = torus(posX[h] - food[f].x, WS);
       const fy = torus(posY[h] - food[f].y, WS);
       const d2 = fx * fx + fy * fy;
-      if (d2 < bestFoodD2) { bestFoodD2 = d2; bfx = fx; bfy = fy; }
+      if (d2 < foodD2) { foodD2 = d2; fdx = fx; fdy = fy; }
     }
-    // nearest predator
-    let bestPredD2 = Infinity, bpx = 0, bpy = 0;
+
+    let predD2 = Infinity, pdx = 0, pdy = 0;
     for (let p = 0; p < n; p++) {
       if (!isCarn[p]) continue;
       const px = torus(posX[h] - posX[p], WS);
       const py = torus(posY[h] - posY[p], WS);
       const d2 = px * px + py * py;
-      if (d2 < bestPredD2) { bestPredD2 = d2; bpx = px; bpy = py; }
+      if (d2 < predD2) { predD2 = d2; pdx = px; pdy = py; }
     }
-    if (bestPredD2 < bestFoodD2 && bestPredD2 < SR * SR) {
-      // flee: vector AWAY from predator (from pred to herb)
-      dx[h] = bpx; dy[h] = bpy;
-      d[h]  = Math.sqrt(bestPredD2);
-    } else if (bestFoodD2 < SR * SR) {
-      // approach food (vector FROM herb TO food, negative = toward)
-      // MATLAB uses dx = foodX - herbX (toward), then mode interprets fight as approach
-      dx[h] = -bfx; dy[h] = -bfy;
-      d[h]  = Math.sqrt(bestFoodD2);
+
+    if (predD2 < foodD2 && predD2 < SR * SR) {
+      // flee: vector away from predator (herb - pred)
+      dx[h] = pdx; dy[h] = pdy; d[h] = Math.sqrt(predD2);
+    } else if (foodD2 < SR * SR) {
+      // forage: vector toward food (food - herb = -(herb - food))
+      dx[h] = -fdx; dy[h] = -fdy; d[h] = Math.sqrt(foodD2);
     }
   }
 
-  // carnivores → nearest weaker herbivore (different lineage)
+  // carnivores: sense nearest live herbivore within senseRadius
   for (let cc = 0; cc < n; cc++) {
     if (!isCarn[cc]) continue;
-    let bestD = Infinity, bx = 0, by = 0;
+    let bestD = SR, bx = 0, by = 0;
     for (let p = 0; p < n; p++) {
-      if (isCarn[p]) continue;          // target herbs only
-      if (fade[p] > 0) continue;        // already fading
-      if (immature[p] > 0) continue;    // protected newborn
-      if (E[p] >= E[cc]) continue;      // only weaker
-      if (fit[p] >= fit[cc]) continue;  // only lower fitness
-      if (lineage[p] === lineage[cc]) continue; // lineage veto
+      if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;
       const ddx = torus(posX[p] - posX[cc], WS);
       const ddy = torus(posY[p] - posY[cc], WS);
       const dist = hypot2(ddx, ddy);
-      if (dist < bestD && dist < SR) { bestD = dist; bx = ddx; by = ddy; }
+      if (dist < bestD) { bestD = dist; bx = ddx; by = ddy; }
     }
     if (bestD < SR) { dx[cc] = bx; dy[cc] = by; d[cc] = bestD; }
   }
 
   // ── NN forward pass ────────────────────────────────────────────────────
-  const act = [];
+  const act = new Array(n);
   for (let k = 0; k < n; k++) {
     if (busy[k] > 0 || fade[k] > 0) {
-      act.push(new Float64Array(P.nOutput));
+      act[k] = new Float64Array(P.nOutput);
       continue;
     }
-    const inp = new Float64Array([
+    act[k] = nnForward(creatures[k].W, new Float64Array([
       dx[k], dy[k],
       d[k] / SR,
       E[k] / P.reproEnergy,
       1,
-    ]);
-    act.push(nnForward(creatures[k].W, inp));
+    ]));
   }
 
-  // ── interpret outputs ──────────────────────────────────────────────────
+  // ── interpret outputs → motion ─────────────────────────────────────────
   const MT = P.modeThresh;
   for (let k = 0; k < n; k++) {
+    if (busy[k] > 0 || fade[k] > 0) { velX[k] = 0; velY[k] = 0; continue; }
     const modeRaw  = act[k][0];
     const thrustIn = Math.max(act[k][1], 0);
-    let mode = 0;
-    if (modeRaw >  MT) mode =  1;
-    if (modeRaw < -MT) mode = -1;
+    const mode     = modeRaw > MT ? 1 : modeRaw < -MT ? -1 : 0;
 
-    const thetaTarget = Math.atan2(dy[k], dx[k]) + (mode === -1 ? Math.PI : 0);
-    const dAng = wrapToPi(thetaTarget - ang[k]);
-    ang[k] += 3 * P.dt * dAng;
+    let theta = Math.atan2(dy[k], dx[k]);
+    if (mode === -1) theta += Math.PI;  // FLIGHT: reverse direction
 
-    const thrust = thrustIn * (mode !== 0 ? 1 : 0);
-    velX[k] += thrust * Math.cos(ang[k]);
-    velY[k] += thrust * Math.sin(ang[k]);
-  }
+    ang[k] += 3 * P.dt * wrapToPi(theta - ang[k]);
 
-  // ── physics ────────────────────────────────────────────────────────────
-  for (let k = 0; k < n; k++) {
-    if (busy[k] > 0 || fade[k] > 0) { velX[k] = 0; velY[k] = 0; continue; }
+    if (mode !== 0) {
+      velX[k] += thrustIn * Math.cos(ang[k]);
+      velY[k] += thrustIn * Math.sin(ang[k]);
+    }
+
+    // clamp speed
     const spd = hypot2(velX[k], velY[k]);
     if (spd > P.maxSpeed) {
-      const scl = P.maxSpeed / spd;
-      velX[k] *= scl; velY[k] *= scl;
+      const sc = P.maxSpeed / spd;
+      velX[k] *= sc; velY[k] *= sc;
     }
-    posX[k] = mod(posX[k] + velX[k] * P.dt, WS);
-    posY[k] = mod(posY[k] + velY[k] * P.dt, WS);
-    const spd2 = hypot2(velX[k], velY[k]);
-    E[k] -= P.energyDecay + P.moveCost * spd2;
-    if (isCarn[k]) E[k] -= P.predMoveCost * spd2;
+  }
+
+  // ── physics (integrate + energy decay) ────────────────────────────────
+  for (let k = 0; k < n; k++) {
+    if (busy[k] > 0 || fade[k] > 0) continue;
+    posX[k] = posmod(posX[k] + velX[k] * P.dt, WS);
+    posY[k] = posmod(posY[k] + velY[k] * P.dt, WS);
+    const spd = hypot2(velX[k], velY[k]);
+    E[k] -= P.energyDecay + P.moveCost * spd;
+    if (isCarn[k]) E[k] -= P.predMoveCost * spd;
+    if (E[k] > 200) E[k] = 200;  // energy cap prevents runaway accumulation
   }
 
   // ── herbivores eat food ────────────────────────────────────────────────
-  const r2 = P.bodyRadius * P.bodyRadius;
-  const eaten = new Uint8Array(food.length);
+  const r2     = P.bodyRadius * P.bodyRadius;
+  const eaten  = new Uint8Array(food.length);
   for (let h = 0; h < n; h++) {
     if (isCarn[h] || fade[h] > 0) continue;
     for (let f = 0; f < food.length; f++) {
@@ -497,77 +446,65 @@ function simStep() {
   food = food.filter((_, f) => !eaten[f]);
 
   // ── predator attacks ───────────────────────────────────────────────────
-  const eatTicks = 10;
+  const EAT_TICKS = 10;
   for (let cc = 0; cc < n; cc++) {
     if (!isCarn[cc] || busy[cc] > 0 || fade[cc] > 0) continue;
-    let bestD = Infinity, bestPrey = -1;
+    let bestD = 2 * P.bodyRadius, bestPrey = -1;
     for (let p = 0; p < n; p++) {
-      if (p === cc) continue;
-      if (fade[p] > 0) continue;
-      if (immature[p] > 0) continue;
-      const canEat = !isCarn[p] || (E[p] < E[cc] && fit[p] < fit[cc]);
-      if (!canEat) continue;
-      const ddx = torus(posX[p] - posX[cc], WS);
-      const ddy = torus(posY[p] - posY[cc], WS);
-      const dist = hypot2(ddx, ddy);
+      if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;  // only eat herbs
+      const dist = hypot2(torus(posX[p] - posX[cc], WS), torus(posY[p] - posY[cc], WS));
       if (dist < bestD) { bestD = dist; bestPrey = p; }
     }
-    if (bestPrey >= 0 && bestD <= 2 * P.bodyRadius) {
-      busy[cc] = eatTicks;
-      fade[bestPrey] = eatTicks;
-      fadeInit[bestPrey] = eatTicks;
-      E[cc] += E[bestPrey] / 4 + P.predEnergyGain; // predEnergyGain is negative
+    if (bestPrey >= 0) {
+      busy[cc]           = EAT_TICKS;
+      fade[bestPrey]     = EAT_TICKS;
+      fadeInit[bestPrey] = EAT_TICKS;
+      E[cc] += E[bestPrey] / 2;  // absorb half of prey's energy
       fit[cc] += P.fitFood;
     }
   }
 
-  // ── death ──────────────────────────────────────────────────────────────
+  // ── deaths ─────────────────────────────────────────────────────────────
   const keep = new Uint8Array(n).fill(1);
   for (let k = 0; k < n; k++) {
-    const oldAgeDeath = isCarn[k]
-      ? age[k] >= P.maxAgeCarn
-      : age[k] >= P.maxAgeHerb;
-    const fadeDeath   = fade[k] === 0 && fadeInit[k] > 0;
-    const energyDeath = E[k] <= 0;
-    if (oldAgeDeath || fadeDeath || energyDeath) keep[k] = 0;
+    const tooOld  = isCarn[k] ? age[k] >= P.maxAgeCarn : age[k] >= P.maxAgeHerb;
+    const fadeDead = fade[k] === 0 && fadeInit[k] > 0;
+    if (tooOld || fadeDead || E[k] <= 0) keep[k] = 0;
   }
 
-  // ── write back survivors ───────────────────────────────────────────────
-  const newCreatures = [];
+  // write back survivors
+  const alive = [];
   for (let k = 0; k < n; k++) {
     if (!keep[k]) continue;
     const c = creatures[k];
     c.posX = posX[k]; c.posY = posY[k];
     c.velX = velX[k]; c.velY = velY[k];
-    c.angle = ang[k];
-    c.energy = E[k];
-    c.fitness = fit[k];
-    c.age = age[k];
-    c.act = act[k];
+    c.angle    = ang[k];
+    c.energy   = E[k];   c.fitness = fit[k];
+    c.age      = age[k]; c.act     = act[k];
     c.busyTime = busy[k];
-    c.fadeTick = fade[k];
-    c.fadeInit = fadeInit[k];
-    c.immature = immature[k];
-    newCreatures.push(c);
+    c.fadeTick = fade[k]; c.fadeInit = fadeInit[k];
+    c.immature = imm[k];
+    alive.push(c);
   }
-  creatures = newCreatures;
+  creatures = alive;
 
   // ── reproduction ───────────────────────────────────────────────────────
-  const toReproduce = [];
+  // reproduce when NN says so OR when energy exceeds threshold (safety net
+  // for creatures whose NN never outputs a positive reproduce signal)
+  const toRepro = [];
   for (let k = 0; k < creatures.length; k++) {
     const c = creatures[k];
     if (c.fadeTick > 0 || c.busyTime > 0) continue;
-    if (c.energy >= P.reproEnergy && c.act[2] > 0) toReproduce.push(k);
+    const thresh = c.type === 'carn' ? P.carnReproEnergy : P.reproEnergy;
+    const wantsRepro = c.act[2] > 0 || c.energy >= thresh * 1.5;
+    if (c.energy >= thresh && wantsRepro) toRepro.push(k);
   }
-  // process in reverse to keep indices valid when appending
-  for (const k of toReproduce) {
-    reproduce(k);
-  }
+  for (const k of toRepro) reproduce(k);
 
   spawnFood();
 }
 
-// ─── Reproduce ────────────────────────────────────────────────────────────
 function reproduce(i) {
   const par = creatures[i];
   const eHalf = par.energy / 2;
@@ -575,125 +512,85 @@ function reproduce(i) {
   par.fitness += P.fitRepro;
   par.immature = Math.max(par.immature, 5);
 
-  // clone weights and mutate
-  const childW = par.W.map(m => {
-    const mc = m.clone();
-    mc.addNoise(P.mutationSigma);
-    return mc;
-  });
-  const mutatedW = mutateNetworkStructure(childW);
+  const childW  = par.W.map(m => { const mc = m.clone(); mc.addNoise(P.mutationSigma); return mc; });
+  const mutated = mutateNetworkStructure(childW);
 
   const chi = makeCreature(
-    mod(par.posX + Math.cos(par.angle) * P.bodyRadius * 3, P.worldSize),
-    mod(par.posY + Math.sin(par.angle) * P.bodyRadius * 3, P.worldSize),
-    mutatedW,
-    par.type,
-    par.lineage,
-    eHalf,
+    posmod(par.posX + Math.cos(par.angle) * P.bodyRadius * 3, P.worldSize),
+    posmod(par.posY + Math.sin(par.angle) * P.bodyRadius * 3, P.worldSize),
+    mutated, par.type, par.lineage, eHalf,
   );
-  chi.fitness = par.fitness / 2;
-  chi.immature = Math.round(2 / P.dt);  // 10 ticks invulnerability
-  chi.angle = rng() * 2 * Math.PI;
+  chi.fitness  = par.fitness / 2;
+  chi.immature = Math.round(2 / P.dt);  // 10-tick invulnerability shield
+  chi.angle    = rng() * 2 * Math.PI;
   if (par.type === 'herb') chi.color = geneColor(chi);
-
   creatures.push(chi);
 }
 
 // ─── Diversity score ───────────────────────────────────────────────────────
 function diversityScore(cre) {
-  const Lcre  = cre.W.length - 1;
-  const Lbase = baseW.length - 1;
-  const dL = Math.abs(Lcre - Lbase);
-  const maxL = Math.max(Lcre, Lbase);
+  const Lc = cre.W.length - 1, Lb = baseW.length - 1;
+  const dL = Math.abs(Lc - Lb);
   let dN = 0;
-  for (let k = 0; k < maxL; k++) {
-    const nCre  = k < Lcre  ? cre.W[k].rows  : 0;
-    const nBase = k < Lbase ? baseW[k].rows   : 0;
-    dN += Math.abs(nCre - nBase);
-  }
+  const mL = Math.max(Lc, Lb);
+  for (let k = 0; k < mL; k++)
+    dN += Math.abs((k < Lc ? cre.W[k].rows : 0) - (k < Lb ? baseW[k].rows : 0));
   let dF = 0;
-  const commonLayers = Math.min(Lcre + 1, Lbase + 1);
-  for (let k = 0; k < commonLayers; k++) {
-    dF += cre.W[k].frobenius(baseW[k]);
-  }
+  for (let k = 0; k < Math.min(Lc + 1, Lb + 1); k++) dF += cre.W[k].frobenius(baseW[k]);
   return dL + 0.2 * dN + 0.002 * dF;
-}
-
-// ─── Polygon verts ────────────────────────────────────────────────────────
-function polyVerts(cre) {
-  const Wlast = cre.W[cre.W.length - 1];
-  const sig   = Math.tanh(Wlast.sumSign() / Wlast.data.length);
-  let ns = Math.max(3, Math.min(8, 3 + Math.round((sig + 1) * 2.5)));
-  const sizeG = 0.8 + 0.6 / (1 + Math.exp(-Wlast.stdAll() * 3));
-  let R = P.bodyRadius * sizeG;
-
-  if (cre.fadeTick > 0 && cre.fadeInit > 0) {
-    R *= cre.fadeTick / cre.fadeInit;
-  } else if (cre.fadeInit > 0) {
-    R = 0;
-  }
-
-  const vx = [], vy = [];
-  for (let i = 0; i < ns; i++) {
-    const th = (i / ns) * 2 * Math.PI + cre.angle;
-    vx.push(cre.posX + R * Math.cos(th));
-    vy.push(cre.posY + R * Math.sin(th));
-  }
-  return { vx, vy };
 }
 
 // ─── Renderer ─────────────────────────────────────────────────────────────
 class Renderer {
   constructor() {
-    this.worldCanvas  = document.getElementById('worldCanvas');
-    this.wCtx         = this.worldCanvas.getContext('2d');
-    this.popCanvas    = document.getElementById('popCanvas');
-    this.pCtx         = this.popCanvas.getContext('2d');
-    this.brainCanvases = [0, 1, 2].map(i => document.getElementById(`brain${i}`));
-    this.brainCtxs     = this.brainCanvases.map(c => c.getContext('2d'));
-    this.detailCanvas  = document.getElementById('brainDetail');
-    this.dCtx          = this.detailCanvas.getContext('2d');
+    this.wCanvas  = document.getElementById('worldCanvas');
+    this.wCtx     = this.wCanvas.getContext('2d');
+    this.pCanvas  = document.getElementById('popCanvas');
+    this.pCtx     = this.pCanvas.getContext('2d');
+    this.bCanvases = [0,1,2].map(i => document.getElementById(`brain${i}`));
+    this.bCtxs     = this.bCanvases.map(c => c.getContext('2d'));
+    this.dCanvas  = document.getElementById('brainDetail');
+    this.dCtx     = this.dCanvas.getContext('2d');
 
-    this.scale = 1;
-    this.dpr   = window.devicePixelRatio || 1;
-    this._lastSelectedIdx = -1;
-    this._lastBrainTick = -1;
-    this.renderFrame = 0;
-
-    this.resize();
-    window.addEventListener('resize', () => this.resize());
+    this.dpr     = 1;
+    this.scale   = 1;
+    this.offsetX = 0;
+    this.offsetY = 0;
   }
 
+  // Call after layout is settled
   resize() {
-    this.dpr = window.devicePixelRatio || 1;
-    this._sizeCanvas(this.worldCanvas, this.wCtx);
-    this._sizeCanvas(this.popCanvas,   this.pCtx);
-    this.brainCanvases.forEach((c, i) => this._sizeCanvas(c, this.brainCtxs[i]));
-    this._sizeCanvas(this.detailCanvas, this.dCtx);
+    this.dpr = Math.min(window.devicePixelRatio || 1, 3);
+    this._size(this.wCanvas,  this.wCtx);
+    this._size(this.pCanvas,  this.pCtx);
+    this.bCanvases.forEach((c, i) => this._size(c, this.bCtxs[i]));
+    this._size(this.dCanvas,  this.dCtx);
 
-    const ww = this.worldCanvas.clientWidth;
-    const wh = this.worldCanvas.clientHeight;
-    this.scale = Math.min(ww / P.worldSize, wh / P.worldSize);
+    const ww = this.wCanvas.clientWidth  || 1;
+    const wh = this.wCanvas.clientHeight || 1;
+    this.scale   = Math.min(ww / P.worldSize, wh / P.worldSize);
     this.offsetX = (ww - P.worldSize * this.scale) / 2;
     this.offsetY = (wh - P.worldSize * this.scale) / 2;
   }
 
-  _sizeCanvas(canvas, ctx) {
-    const dpr = this.dpr;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-      canvas.width  = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  _size(canvas, ctx) {
+    const d = this.dpr;
+    const w = Math.max(1, canvas.clientWidth);
+    const h = Math.max(1, canvas.clientHeight);
+    const pw = Math.round(w * d), ph = Math.round(h * d);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width  = pw;
+      canvas.height = ph;
     }
+    // always reset transform so DPR scaling is correct
+    ctx.setTransform(d, 0, 0, d, 0, 0);
   }
 
-  // world coords → canvas logical coords
+  // world → canvas logical
   wx(x) { return this.offsetX + x * this.scale; }
   wy(y) { return this.offsetY + (P.worldSize - y) * this.scale; }
 
-  // canvas logical → world coords (for touch)
+  // canvas logical → world (for tap detection)
   canvasToWorld(cx, cy) {
     return {
       x: (cx - this.offsetX) / this.scale,
@@ -701,32 +598,32 @@ class Renderer {
     };
   }
 
+  // ── World ──────────────────────────────────────────────────────────────
   drawWorld(selectedIdx) {
     const ctx = this.wCtx;
-    const cw  = this.worldCanvas.clientWidth;
-    const ch  = this.worldCanvas.clientHeight;
+    const cw  = this.wCanvas.clientWidth;
+    const ch  = this.wCanvas.clientHeight;
 
-    ctx.fillStyle = '#060608';
+    ctx.fillStyle = '#050509';
     ctx.fillRect(0, 0, cw, ch);
 
-    // food (batched)
-    ctx.fillStyle = '#38e838';
+    // food (all in one path)
+    ctx.fillStyle = '#2ecc40';
     ctx.beginPath();
     for (const f of food) {
-      const fx = this.wx(f.x);
-      const fy = this.wy(f.y);
-      ctx.moveTo(fx + 2, fy);
-      ctx.arc(fx, fy, 2, 0, Math.PI * 2);
+      const fx = this.wx(f.x), fy = this.wy(f.y);
+      ctx.moveTo(fx + 2.5, fy);
+      ctx.arc(fx, fy, 2.5, 0, 6.2832);
     }
     ctx.fill();
 
     // creatures
     for (let k = 0; k < creatures.length; k++) {
       const c = creatures[k];
-      const { vx, vy } = polyVerts(c);
-      if (vx.length === 0) continue;
+      const { vx, vy, R } = polyVerts(c);
+      if (R <= 0 || vx.length === 0) continue;
       const [r, g, b] = c.color;
-      ctx.fillStyle = `rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`;
+      ctx.fillStyle = `rgb(${(r*255)|0},${(g*255)|0},${(b*255)|0})`;
       ctx.beginPath();
       ctx.moveTo(this.wx(vx[0]), this.wy(vy[0]));
       for (let i = 1; i < vx.length; i++) ctx.lineTo(this.wx(vx[i]), this.wy(vy[i]));
@@ -734,150 +631,146 @@ class Renderer {
       ctx.fill();
     }
 
-    // halo for selected
+    // selection halo
     if (selectedIdx >= 0 && selectedIdx < creatures.length) {
       const c = creatures[selectedIdx];
-      ctx.strokeStyle = '#ff0';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#ffdd00';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(this.wx(c.posX), this.wy(c.posY), P.bodyRadius * 2.5 * this.scale, 0, Math.PI * 2);
+      ctx.arc(this.wx(c.posX), this.wy(c.posY), P.bodyRadius * 3 * this.scale, 0, 6.2832);
       ctx.stroke();
     }
   }
 
+  // ── Population graph ───────────────────────────────────────────────────
   drawPopGraph() {
     const ctx = this.pCtx;
-    const cw = this.popCanvas.clientWidth;
-    const ch = this.popCanvas.clientHeight;
-    ctx.fillStyle = '#06060c';
+    const cw  = this.pCanvas.clientWidth;
+    const ch  = this.pCanvas.clientHeight;
+    ctx.fillStyle = '#06060d';
     ctx.fillRect(0, 0, cw, ch);
 
     if (popCount < 2) return;
 
-    let maxVal = 2;
+    let maxVal = 4;
     for (let i = 0; i < popCount; i++) {
-      const idx = (popHead - popCount + i + POP_HISTORY_MAX) % POP_HISTORY_MAX;
+      const idx = (popHead - popCount + i + POP_MAX) % POP_MAX;
       const tot = popHerb[idx] + popCarn[idx];
       if (tot > maxVal) maxVal = tot;
     }
 
-    const xStep = cw / (popCount - 1);
-    const yScale = (ch - 4) / (maxVal * 1.1);
+    const xStep  = cw / (popCount - 1);
+    const yScale = (ch - 6) / (maxVal * 1.15);
 
-    const drawLine = (arr, color) => {
+    const line = (arr, color, lw) => {
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth   = lw;
       ctx.beginPath();
       for (let i = 0; i < popCount; i++) {
-        const idx = (popHead - popCount + i + POP_HISTORY_MAX) % POP_HISTORY_MAX;
+        const idx = (popHead - popCount + i + POP_MAX) % POP_MAX;
         const x = i * xStep;
-        const y = ch - arr[idx] * yScale - 2;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        const y = ch - 3 - arr[idx] * yScale;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       }
       ctx.stroke();
     };
 
-    drawLine(popHerb, '#3d3');
-    drawLine(popCarn, '#d33');
+    line(popHerb, '#3b3', 1.5);
+    line(popCarn, '#c33', 1.5);
 
     // total
-    ctx.strokeStyle = '#aaa';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#667';
+    ctx.lineWidth   = 1;
     ctx.beginPath();
     for (let i = 0; i < popCount; i++) {
-      const idx = (popHead - popCount + i + POP_HISTORY_MAX) % POP_HISTORY_MAX;
-      const x = i * xStep;
-      const y = ch - (popHerb[idx] + popCarn[idx]) * yScale - 2;
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      const idx = (popHead - popCount + i + POP_MAX) % POP_MAX;
+      const tot = popHerb[idx] + popCarn[idx];
+      i === 0 ? ctx.moveTo(i * xStep, ch - 3 - tot * yScale)
+              : ctx.lineTo(i * xStep, ch - 3 - tot * yScale);
     }
     ctx.stroke();
+
+    // legend
+    ctx.font = '9px -apple-system,sans-serif';
+    ctx.fillStyle = '#3b3'; ctx.fillText('herb', 4, 11);
+    ctx.fillStyle = '#c33'; ctx.fillText('carn', 4, 22);
   }
 
+  // ── Brain diagram ──────────────────────────────────────────────────────
   drawBrain(ctx, cre, w, h) {
     ctx.clearRect(0, 0, w, h);
-    if (!cre) return;
+    if (!cre || !w || !h) return;
+
     const W = cre.W;
     const L = W.length - 1;  // hidden layer count
 
-    // build layer node counts
-    const layers = [];
-    layers.push(W[0].cols);          // input count
+    // layer sizes: [nInput, h0, h1, ..., nOutput]
+    const layers = [W[0].cols];
     for (let l = 0; l < L; l++) layers.push(W[l].rows);
-    layers.push(W[W.length - 1].rows); // output
+    layers.push(W[W.length - 1].rows);
 
-    const nLayers = layers.length;
-    const xSpacing = w / (nLayers + 1);
-
-    // y positions for each layer
-    const yPos = layers.map(count => {
-      const spacing = h / (count + 1);
-      return Array.from({ length: count }, (_, i) => spacing * (i + 1));
+    const nL    = layers.length;
+    const xGap  = w / (nL + 1);
+    const xPos  = layers.map((_, li) => xGap * (li + 1));
+    const yPos  = layers.map(cnt => {
+      const gap = h / (cnt + 1);
+      return Array.from({ length: cnt }, (_, i) => gap * (i + 1));
     });
 
-    const xPos = layers.map((_, li) => xSpacing * (li + 1));
-
-    // draw edges (grouped by color to reduce stroke calls)
-    ctx.lineWidth = 0.8;
-    const MAX_NODES_FOR_LINES = 20;
-    for (let li = 0; li < nLayers - 1; li++) {
-      const srcN = layers[li];
-      const dstN = layers[li + 1];
-      if (srcN > MAX_NODES_FOR_LINES || dstN > MAX_NODES_FOR_LINES) continue;
-      // bucket edges by greyscale level
+    // edges (grouped by color bucket for fewer stroke calls)
+    const MAX_N = 18;
+    ctx.lineWidth = 0.7;
+    for (let li = 0; li < nL - 1; li++) {
+      const sN = layers[li], dN = layers[li + 1];
+      if (sN > MAX_N || dN > MAX_N) continue;
       const buckets = {};
-      for (let s = 0; s < srcN; s++) {
-        for (let dst = 0; dst < dstN; dst++) {
-          const wv = W[li].get(dst, s);
-          const col = weightColor(wv);
-          if (!buckets[col]) buckets[col] = [];
-          buckets[col].push([xPos[li], yPos[li][s], xPos[li + 1], yPos[li + 1][dst]]);
+      for (let s = 0; s < sN; s++) {
+        for (let dst = 0; dst < dN; dst++) {
+          const col = weightColor(W[li].get(dst, s));
+          (buckets[col] = buckets[col] || []).push(xPos[li], yPos[li][s], xPos[li+1], yPos[li+1][dst]);
         }
       }
-      for (const [col, segs] of Object.entries(buckets)) {
+      for (const [col, pts] of Object.entries(buckets)) {
         ctx.strokeStyle = col;
         ctx.beginPath();
-        for (const [x0, y0, x1, y1] of segs) {
-          ctx.moveTo(x0, y0);
-          ctx.lineTo(x1, y1);
+        for (let p = 0; p < pts.length; p += 4) {
+          ctx.moveTo(pts[p], pts[p+1]);
+          ctx.lineTo(pts[p+2], pts[p+3]);
         }
         ctx.stroke();
       }
     }
 
-    // draw nodes
-    const nodeR = Math.max(2, Math.min(5, w / 40));
-    for (let li = 0; li < nLayers; li++) {
-      for (let ni = 0; ni < layers[li]; ni++) {
-        if (layers[li] > 50) {
-          // too many nodes — just show count
-          ctx.fillStyle = '#557';
-          ctx.font = `${Math.max(8, nodeR * 2)}px sans-serif`;
-          ctx.fillText(`${layers[li]}`, xPos[li] - nodeR, h / 2);
-          break;
-        }
-        ctx.fillStyle = li === 0 ? '#66aaff' : li === nLayers - 1 ? '#ffaa44' : '#eeeeee';
-        ctx.beginPath();
-        ctx.arc(xPos[li], yPos[li][ni], nodeR, 0, Math.PI * 2);
-        ctx.fill();
+    // nodes
+    const nodeR = Math.max(2, Math.min(5, xGap * 0.18));
+    for (let li = 0; li < nL; li++) {
+      if (layers[li] > 40) {
+        // just label the count
+        ctx.fillStyle = '#556';
+        ctx.font = `${Math.round(nodeR * 2.5)}px sans-serif`;
+        ctx.fillText(`×${layers[li]}`, xPos[li] - nodeR * 2, h / 2);
+        continue;
       }
+      ctx.fillStyle = li === 0 ? '#5599ff' : li === nL - 1 ? '#ffaa33' : '#cccccc';
+      ctx.beginPath();
+      for (let ni = 0; ni < layers[li]; ni++) {
+        ctx.moveTo(xPos[li] + nodeR, yPos[li][ni]);
+        ctx.arc(xPos[li], yPos[li][ni], nodeR, 0, 6.2832);
+      }
+      ctx.fill();
     }
   }
 
+  // ── Brain panel updates ────────────────────────────────────────────────
   drawBrainPanels(topIdxs, selectedIdx) {
-    // top-3 by fitness
     for (let k = 0; k < 3; k++) {
-      const bw = this.brainCanvases[k].clientWidth;
-      const bh = this.brainCanvases[k].clientHeight;
-      const ctx = this.brainCtxs[k];
-      const cre = topIdxs[k] !== undefined ? creatures[topIdxs[k]] : null;
-      this.drawBrain(ctx, cre, bw, bh);
+      const c  = this.bCanvases[k];
+      const cre = (topIdxs[k] !== undefined) ? creatures[topIdxs[k]] : null;
+      this.drawBrain(this.bCtxs[k], cre, c.clientWidth, c.clientHeight);
     }
-
-    // detail panel
     if (selectedIdx >= 0 && selectedIdx < creatures.length) {
-      const bw = this.detailCanvas.clientWidth;
-      const bh = this.detailCanvas.clientHeight;
-      this.drawBrain(this.dCtx, creatures[selectedIdx], bw, bh);
+      const dc = this.dCanvas;
+      this.drawBrain(this.dCtx, creatures[selectedIdx], dc.clientWidth, dc.clientHeight);
     }
   }
 }
@@ -894,30 +787,29 @@ class UIController {
     this._panel     = document.getElementById('creaturePanel');
     this._panelTitle = document.getElementById('panelTitle');
     this._panelStats = document.getElementById('panelStats');
+    this._hint      = document.getElementById('hint');
+    this._hintShown = false;
     this._brainLabels = [0,1,2].map(i => document.getElementById(`brainLabel${i}`));
 
-    document.getElementById('worldCanvas').addEventListener('touchstart', e => {
+    // touch on world canvas
+    const wc = renderer.wCanvas;
+    wc.addEventListener('touchstart', e => {
       e.preventDefault();
-      const touch = e.changedTouches[0];
-      const rect  = renderer.worldCanvas.getBoundingClientRect();
-      const cx = touch.clientX - rect.left;
-      const cy = touch.clientY - rect.top;
-      const { x, y } = renderer.canvasToWorld(cx, cy);
-      this._onTap(x, y);
+      const t    = e.changedTouches[0];
+      const rect = wc.getBoundingClientRect();
+      this._onTap(
+        renderer.canvasToWorld(t.clientX - rect.left, t.clientY - rect.top)
+      );
     }, { passive: false });
 
-    document.getElementById('worldCanvas').addEventListener('mousedown', e => {
-      const rect = renderer.worldCanvas.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      const { x, y } = renderer.canvasToWorld(cx, cy);
-      this._onTap(x, y);
+    wc.addEventListener('click', e => {
+      const rect = wc.getBoundingClientRect();
+      this._onTap(renderer.canvasToWorld(e.clientX - rect.left, e.clientY - rect.top));
     });
 
-    document.getElementById('closePanelBtn').addEventListener('click', () => {
-      this.selectedIdx = -1;
-      this._panel.classList.remove('open');
-    });
+    // close panel on handle drag or tap outside
+    document.getElementById('closePanelBtn').addEventListener('click', () => this._closePanel());
+    document.getElementById('panelHandle').addEventListener('click', () => this._closePanel());
 
     document.getElementById('pauseBtn').addEventListener('click', () => {
       this._paused = !this._paused;
@@ -929,41 +821,52 @@ class UIController {
       document.getElementById('fileInput').click();
     });
     document.getElementById('fileInput').addEventListener('change', e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = ev => this._load(ev.target.result);
-      reader.readAsText(file);
+      const f = e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = ev => this._load(ev.target.result);
+      r.readAsText(f);
       e.target.value = '';
     });
 
-    // block body scroll on touch
+    // prevent all body scrolling on touch
     document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
   }
 
   get paused() { return this._paused; }
 
-  _onTap(wx, wy) {
-    const hitR = P.bodyRadius * 4;
+  _onTap({ x, y }) {
+    // show hint once creature selected
+    if (!this._hintShown) {
+      this._hint.classList.add('hidden');
+      this._hintShown = true;
+    }
+
+    // hit radius in world units: at least ~12 units for comfortable tap on phone
+    const hitR = Math.max(P.bodyRadius * 8, 12);
     let bestD = hitR, bestK = -1;
     for (let k = 0; k < creatures.length; k++) {
       const c = creatures[k];
-      const ddx = torus(wx - c.posX, P.worldSize);
-      const ddy = torus(wy - c.posY, P.worldSize);
-      const dist = hypot2(ddx, ddy);
+      const dist = hypot2(torus(x - c.posX, P.worldSize), torus(y - c.posY, P.worldSize));
       if (dist < bestD) { bestD = dist; bestK = k; }
     }
+
     this.selectedIdx = bestK;
     if (bestK >= 0) {
       this._panel.classList.add('open');
     } else {
-      this._panel.classList.remove('open');
+      this._closePanel();
     }
+  }
+
+  _closePanel() {
+    this._panel.classList.remove('open');
+    this.selectedIdx = -1;
   }
 
   updateHeader(nHerb, nCarn) {
     this._tickEl.textContent = `Tick ${tick}`;
-    this._popEl.textContent  = `H:${nHerb} C:${nCarn}`;
+    this._popEl.textContent  = `H:${nHerb}  C:${nCarn}`;
   }
 
   updateBrainLabels(topIdxs) {
@@ -971,9 +874,10 @@ class UIController {
       const idx = topIdxs[k];
       if (idx !== undefined && idx < creatures.length) {
         const c = creatures[idx];
-        this._brainLabels[k].textContent = `Fit ${c.fitness.toFixed(0)} E${c.energy.toFixed(0)}`;
+        this._brainLabels[k].textContent =
+          `${c.type === 'carn' ? 'C' : 'H'} F${c.fitness.toFixed(0)} E${c.energy.toFixed(0)}`;
       } else {
-        this._brainLabels[k].textContent = `Fit #${k+1}`;
+        this._brainLabels[k].textContent = `Top Fit #${k+1}`;
       }
     }
   }
@@ -982,50 +886,61 @@ class UIController {
     const idx = this.selectedIdx;
     if (idx < 0 || idx >= creatures.length) return;
     const c = creatures[idx];
-    const layers = c.W.map(m => m.rows).join('→');
-    this._panelTitle.textContent = `${c.type === 'carn' ? '🔴 Carnivore' : '🟢 Herbivore'}  #${idx}`;
-    this._panelStats.textContent =
-      `Energy: ${c.energy.toFixed(1)} · Fit: ${c.fitness.toFixed(0)} · Age: ${c.age} · Layers: [${c.W[0].cols}→${layers}]`;
+    const layerStr = [c.W[0].cols, ...c.W.map(m => m.rows)].join('→');
+    this._panelTitle.textContent =
+      (c.type === 'carn' ? 'Carnivore' : 'Herbivore') + `  #${idx}`;
+    this._panelStats.innerHTML =
+      `Energy: ${c.energy.toFixed(1)}  &middot;  Fitness: ${c.fitness.toFixed(0)}<br>` +
+      `Age: ${c.age}  &middot;  Brain: [${layerStr}]`;
   }
 
   _save() {
     const state = {
       tick, rngSeed,
       creatures: creatures.map(c => ({
-        ...c,
+        posX: c.posX, posY: c.posY, velX: c.velX, velY: c.velY,
+        angle: c.angle, energy: c.energy, fitness: c.fitness,
+        age: c.age, type: c.type, lineage: c.lineage,
+        busyTime: c.busyTime, fadeTick: c.fadeTick, fadeInit: c.fadeInit,
+        immature: c.immature, color: c.color,
         W: c.W.map(m => m.toJSON()),
         act: Array.from(c.act),
       })),
       food,
-      popT:    Array.from(popT.slice(0, popCount)),
-      popHerb: Array.from(popHerb.slice(0, popCount)),
-      popCarn: Array.from(popCarn.slice(0, popCount)),
+      popHerb: Array.from(popHerb.subarray(0, popCount)),
+      popCarn: Array.from(popCarn.subarray(0, popCount)),
       popHead, popCount,
     };
-    const blob = new Blob([JSON.stringify(state)], { type: 'application/json' });
     const a    = document.createElement('a');
-    a.href     = URL.createObjectURL(blob);
+    a.href     = URL.createObjectURL(new Blob([JSON.stringify(state)], { type: 'application/json' }));
     a.download = `bibites_${tick}.json`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
 
   _load(text) {
     try {
       const s = JSON.parse(text);
-      tick     = s.tick;
-      rngSeed  = s.rngSeed;
-      food     = s.food;
-      creatures = s.creatures.map(sc => {
-        const c = { ...sc, W: sc.W.map(m => Matrix.fromJSON(m)), act: new Float64Array(sc.act) };
-        return c;
-      });
+      tick    = s.tick || 0;
+      rngSeed = s.rngSeed || 1;
+      food    = s.food || [];
+      creatures = s.creatures.map(sc => ({
+        posX: sc.posX, posY: sc.posY, velX: sc.velX, velY: sc.velY,
+        angle: sc.angle, energy: sc.energy, fitness: sc.fitness,
+        age: sc.age, type: sc.type, lineage: sc.lineage || 0,
+        busyTime: sc.busyTime || 0, fadeTick: sc.fadeTick || 0,
+        fadeInit: sc.fadeInit || 0, immature: sc.immature || 0,
+        color: sc.color || [1,1,1],
+        W: sc.W.map(m => Matrix.fromJSON(m)),
+        act: new Float64Array(sc.act || [0,0,0]),
+      }));
       baseW = creatures[0]?.W.map(m => m.clone()) ?? baseW;
-      if (s.popCount !== undefined) {
-        popHead = s.popHead; popCount = s.popCount;
-        for (let i = 0; i < s.popT.length; i++) { popT[i] = s.popT[i]; popHerb[i] = s.popHerb[i]; popCarn[i] = s.popCarn[i]; }
-      }
+      popHead = s.popHead || 0;
+      popCount = s.popCount || 0;
+      if (s.popHerb) for (let i = 0; i < s.popHerb.length; i++) popHerb[i] = s.popHerb[i];
+      if (s.popCarn) for (let i = 0; i < s.popCarn.length; i++) popCarn[i] = s.popCarn[i];
     } catch (e) {
-      alert('Failed to load state: ' + e.message);
+      alert('Load failed: ' + e.message);
     }
   }
 }
@@ -1033,109 +948,123 @@ class UIController {
 // ─── Game Loop ────────────────────────────────────────────────────────────
 class GameLoop {
   constructor(renderer, ui) {
-    this.renderer = renderer;
-    this.ui       = ui;
-    this._rafId   = null;
-    this._last    = 0;
-    this._accumulator = 0;
-    this._renderEvery = 10;  // update brain panels every N render frames
-    this._brainFrame  = 0;
+    this.renderer    = renderer;
+    this.ui          = ui;
+    this._rafId      = null;
+    this._lastTs     = 0;
+    this._brainFrame = 0;
+    this._BRAIN_EVERY = 8;  // redraw brain panels every N frames
   }
 
   start() {
-    this._last = performance.now();
-    this._rafId = requestAnimationFrame(ts => this._loop(ts));
+    this._lastTs = performance.now();
+    this._rafId  = requestAnimationFrame(ts => this._loop(ts));
   }
 
   _loop(ts) {
     this._rafId = requestAnimationFrame(t => this._loop(t));
 
-    const elapsed = Math.min(ts - this._last, 50);
-    this._last = ts;
+    const dt = Math.min(ts - this._lastTs, 100);  // cap at 100ms to survive tab-switch
+    this._lastTs = ts;
 
     if (!this.ui.paused) {
-      // run 2 sim ticks per render frame (matches graphicsStride:2)
-      simStep();
-      simStep();
+      // run 2 sim ticks per frame (matching graphicsStride:2)
+      simStep(); simStep();
       tick += 2;
 
       // record population
-      const nCarn = creatures.filter(c => c.type === 'carn').length;
+      const nCarn = countType('carn');
       const nHerb = creatures.length - nCarn;
-      popT[popHead]    = tick;
       popHerb[popHead] = nHerb;
       popCarn[popHead] = nCarn;
-      popHead = (popHead + 1) % POP_HISTORY_MAX;
-      if (popCount < POP_HISTORY_MAX) popCount++;
+      popHead = (popHead + 1) % POP_MAX;
+      if (popCount < POP_MAX) popCount++;
 
       this.ui.updateHeader(nHerb, nCarn);
     }
 
-    // clamp selectedIdx if creature died
+    // clamp selectedIdx if that creature died
     if (this.ui.selectedIdx >= creatures.length) {
       this.ui.selectedIdx = -1;
       document.getElementById('creaturePanel').classList.remove('open');
     }
 
-    // sort by fitness for top-3
-    let topIdxs = [];
-    if (creatures.length > 0) {
-      const ranked = creatures
-        .map((c, i) => ({ i, f: c.fitness }))
-        .sort((a, b) => b.f - a.f);
-      topIdxs = ranked.slice(0, 3).map(r => r.i);
-    }
+    // top-3 by fitness
+    const topIdxs = topByFitness(3);
 
-    // render
     this.renderer.drawWorld(this.ui.selectedIdx);
     this.renderer.drawPopGraph();
 
     this._brainFrame++;
-    if (this._brainFrame % this._renderEvery === 0 || this.ui.selectedIdx !== this.renderer._lastSelectedIdx) {
+    const brainDirty = this.ui.selectedIdx !== this.renderer._lastSel;
+    if (brainDirty || this._brainFrame % this._BRAIN_EVERY === 0) {
       this.renderer.drawBrainPanels(topIdxs, this.ui.selectedIdx);
       this.ui.updateBrainLabels(topIdxs);
-      this.ui.updatePanelStats();
-      this.renderer._lastSelectedIdx = this.ui.selectedIdx;
+      if (this.ui.selectedIdx >= 0) this.ui.updatePanelStats();
+      this.renderer._lastSel = this.ui.selectedIdx;
     }
 
     if (creatures.length === 0) {
-      document.getElementById('tickDisplay').textContent = 'Extinct! Reload to restart.';
+      this.ui._tickEl.textContent = 'All extinct — reload to restart';
       cancelAnimationFrame(this._rafId);
     }
   }
 }
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────
-window.addEventListener('load', () => {
-  // iOS Safari vh fix
-  const setVH = () => {
-    document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
-  };
-  setVH();
-  window.addEventListener('resize', setVH);
+function countType(type) {
+  let c = 0;
+  for (const cr of creatures) if (cr.type === type) c++;
+  return c;
+}
 
+function topByFitness(n) {
+  if (!creatures.length) return [];
+  return creatures
+    .map((c, i) => ({ i, f: c.fitness }))
+    .sort((a, b) => b.f - a.f)
+    .slice(0, n)
+    .map(r => r.i);
+}
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
   initWorld(1);
 
   const renderer = new Renderer();
   const ui       = new UIController(renderer);
   const loop     = new GameLoop(renderer, ui);
 
-  // set world canvas height = available width (square world) — must be after renderer is created
   const worldWrap = document.getElementById('worldWrap');
-  const setLayout = () => {
+
+  function applyLayout() {
     const isLandscape = window.innerWidth > window.innerHeight;
     if (!isLandscape) {
-      // portrait: square world canvas
-      const w = worldWrap.clientWidth || window.innerWidth;
-      worldWrap.style.height = w + 'px';
+      // portrait: world canvas is a square equal to viewport width
+      worldWrap.style.height = worldWrap.clientWidth + 'px';
     } else {
-      // landscape: fill container height
       worldWrap.style.height = '';
     }
-    renderer.resize();
-  };
-  setLayout();
-  window.addEventListener('resize', setLayout);
+  }
 
-  loop.start();
+  function onResize() {
+    applyLayout();
+    // defer canvas sizing one frame so layout has settled
+    requestAnimationFrame(() => renderer.resize());
+  }
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', () => setTimeout(onResize, 100));
+
+  // initial layout + resize, deferred two frames to be sure layout is ready
+  requestAnimationFrame(() => {
+    applyLayout();
+    requestAnimationFrame(() => {
+      renderer.resize();
+      loop.start();
+      // hide hint after 6 seconds
+      setTimeout(() => {
+        document.getElementById('hint').classList.add('hidden');
+      }, 6000);
+    });
+  });
 });

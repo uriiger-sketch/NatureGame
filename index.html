@@ -2,273 +2,343 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="BibitesSim">
-  <meta name="theme-color" content="#080810">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#07070f">
   <title>BibitesSim</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    *, *::before, *::after {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
 
-    html {
-      height: 100%;
-      height: -webkit-fill-available;
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bot: env(safe-area-inset-bottom, 0px);
+      --safe-l:   env(safe-area-inset-left, 0px);
+      --safe-r:   env(safe-area-inset-right, 0px);
+      --header-h: 48px;
+      --pop-h: 64px;
+      --bg: #07070f;
+      --bg2: #0b0b18;
+      --border: #1e1e38;
+      --accent: #4488ff;
+      --text: #dde0f0;
+      --dim: #667;
+    }
+
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
+      background: var(--bg);
+      overflow: hidden;
+      overscroll-behavior: none;
     }
 
     body {
-      margin: 0; padding: 0;
-      width: 100%;
-      height: 100dvh;
-      min-height: -webkit-fill-available;
-      background: #080810;
-      color: #e0e0e0;
-      font-family: -apple-system, system-ui, 'SF Pro Display', sans-serif;
-      overscroll-behavior: none;
-      overflow: hidden;
       display: flex;
       flex-direction: column;
-      padding-top: env(safe-area-inset-top);
-      padding-left: env(safe-area-inset-left);
-      padding-right: env(safe-area-inset-right);
-      padding-bottom: env(safe-area-inset-bottom);
+      /* fill to real available height, avoiding iOS Safari chrome */
+      height: 100dvh;
+      min-height: -webkit-fill-available;
+      padding-top: var(--safe-top);
+      padding-left: var(--safe-l);
+      padding-right: var(--safe-r);
+      font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;
+      color: var(--text);
     }
 
+    /* ── Header ── */
     #header {
-      flex: 0 0 auto;
-      height: 44px;
+      flex: 0 0 var(--header-h);
+      height: var(--header-h);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 0 14px;
-      background: rgba(8,8,20,0.92);
-      border-bottom: 1px solid #1a1a30;
-      font-size: clamp(11px, 3vw, 14px);
-      letter-spacing: 0.02em;
-      z-index: 10;
-      flex-shrink: 0;
+      gap: 8px;
+      padding: 0 12px;
+      background: rgba(7,7,15,0.96);
+      border-bottom: 1px solid var(--border);
+      z-index: 20;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
     }
 
-    #header .left { color: #7af; }
-    #header .mid  { color: #aaa; font-size: 0.9em; }
-    #header .right { display:flex; gap:8px; }
+    #tickDisplay {
+      font-size: 13px;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      min-width: 72px;
+    }
+
+    #popDisplay {
+      font-size: 12px;
+      color: var(--dim);
+      flex: 1;
+    }
 
     .hbtn {
-      background: #1a1a30;
-      border: 1px solid #2a2a50;
-      color: #99aadd;
-      font-size: 12px;
-      padding: 4px 10px;
-      border-radius: 6px;
+      background: #181830;
+      border: 1px solid var(--border);
+      color: #8899cc;
+      font-size: 13px;
+      font-family: inherit;
+      padding: 0 12px;
+      height: 34px;
+      min-width: 44px;
+      border-radius: 8px;
       cursor: pointer;
-      -webkit-user-select: none;
-      user-select: none;
       touch-action: manipulation;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .hbtn:active { background: #2a2a50; }
+    .hbtn:active { background: #222244; }
 
+    /* ── Main area (world + sidebar) ── */
+    #main {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── World canvas wrapper ── */
     #worldWrap {
       flex: 0 0 auto;
       position: relative;
-      width: 100%;
-      background: #060608;
-    }
-
-    #sidebar {
-      flex: 1 1 0;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
+      background: #050509;
       overflow: hidden;
     }
 
     #worldCanvas {
-      display: block;
+      position: absolute;
+      top: 0; left: 0;
       width: 100%;
       height: 100%;
+      display: block;
       touch-action: none;
-      transform: translate3d(0,0,0);
+    }
+
+    /* ── Sidebar (pop graph + brain panels) ── */
+    #sidebar {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
     }
 
     #popCanvas {
-      flex: 0 0 60px;
+      flex: 0 0 var(--pop-h);
       display: block;
       width: 100%;
-      background: #06060c;
-      border-top: 1px solid #141428;
-      border-bottom: 1px solid #141428;
+      background: #06060d;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
       touch-action: none;
     }
 
     #brainsRow {
       flex: 1 1 0;
+      min-height: 0;
       display: flex;
       gap: 3px;
       padding: 4px;
-      background: #060608;
       overflow: hidden;
-      min-height: 0;
     }
 
     .brainWrap {
-      flex: 1;
+      flex: 1 1 0;
+      min-width: 0;
       display: flex;
       flex-direction: column;
-      min-width: 0;
-      background: #0a0a18;
-      border: 1px solid #1a1a30;
-      border-radius: 6px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       overflow: hidden;
     }
 
     .brainLabel {
+      flex: 0 0 auto;
       font-size: 10px;
-      color: #668;
+      color: var(--dim);
       text-align: center;
-      padding: 2px 0;
-      flex-shrink: 0;
-      border-bottom: 1px solid #111128;
+      padding: 3px 4px;
+      border-bottom: 1px solid var(--border);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      padding: 2px 4px;
     }
 
     .brainCanvas {
-      display: block;
       flex: 1 1 0;
+      display: block;
       width: 100%;
       min-height: 0;
     }
 
-    /* Slide-up creature panel */
+    /* ── Slide-up creature panel ── */
     #creaturePanel {
       position: fixed;
-      bottom: 0; left: 0; right: 0;
-      height: 58%;
-      background: #0e0e1e;
-      border-top: 1.5px solid #2a2a50;
-      border-radius: 14px 14px 0 0;
+      inset: auto 0 0 0;
+      height: 55%;
+      background: #0d0d1f;
+      border-top: 1.5px solid #2a2a58;
+      border-radius: 16px 16px 0 0;
       display: flex;
       flex-direction: column;
-      padding: 0 14px;
-      padding-bottom: calc(10px + env(safe-area-inset-bottom));
-      transform: translateY(105%);
-      transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+      padding: 0 16px calc(12px + var(--safe-bot));
+      transform: translateY(110%);
+      transition: transform 0.3s cubic-bezier(0.32, 0, 0.67, 0);
       will-change: transform;
-      z-index: 200;
+      z-index: 300;
+      touch-action: none;
+    }
+    #creaturePanel.open {
+      transform: translateY(0);
+      transition-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
     }
 
-    #creaturePanel.open { transform: translateY(0); }
-
     #panelHandle {
-      width: 36px; height: 4px;
-      background: #333;
+      flex: 0 0 auto;
+      width: 40px; height: 4px;
+      background: #2a2a48;
       border-radius: 2px;
-      margin: 8px auto 6px;
-      flex-shrink: 0;
+      margin: 10px auto 8px;
+    }
+
+    #panelRow {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
     }
 
     #panelTitle {
-      font-size: 12px;
-      color: #99aadd;
-      text-align: center;
-      margin-bottom: 6px;
-      flex-shrink: 0;
-      white-space: nowrap;
+      flex: 1;
+      font-size: 13px;
+      color: #aabbee;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-
-    #brainDetail {
-      display: block;
-      flex: 1 1 0;
-      width: 100%;
-      min-height: 0;
-      background: #0a0a16;
-      border-radius: 6px;
-    }
-
-    #panelStats {
-      font-size: 11px;
-      color: #778;
-      text-align: center;
-      margin-top: 6px;
-      flex-shrink: 0;
-      line-height: 1.5;
+      white-space: nowrap;
     }
 
     #closePanelBtn {
-      position: absolute;
-      top: 12px; right: 14px;
-      background: none;
-      border: none;
-      color: #556;
-      font-size: 20px;
+      background: #1a1a38;
+      border: 1px solid var(--border);
+      color: #667;
+      font-size: 16px;
+      width: 36px; height: 36px;
+      border-radius: 50%;
       cursor: pointer;
-      padding: 0;
-      line-height: 1;
-      touch-action: manipulation;
-    }
-
-    #main {
-      flex: 1 1 0;
       display: flex;
-      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      touch-action: manipulation;
+      flex-shrink: 0;
+    }
+    #closePanelBtn:active { background: #222244; }
+
+    #brainDetail {
+      flex: 1 1 0;
+      display: block;
+      width: 100%;
       min-height: 0;
-      overflow: hidden;
+      background: var(--bg2);
+      border-radius: 8px;
     }
 
-    /* landscape tweaks */
-    @media (orientation: landscape) {
-      #main { flex-direction: row; }
-      #worldWrap { flex: 0 0 58%; max-width: 58%; height: 100%; }
-      #sidebar { flex: 1 1 0; height: 100%; }
-      /* disable JS square-sizing in landscape */
-      #worldWrap[data-landscape] { height: 100% !important; }
+    #panelStats {
+      flex: 0 0 auto;
+      font-size: 11px;
+      color: var(--dim);
+      text-align: center;
+      margin-top: 8px;
+      line-height: 1.6;
+      font-variant-numeric: tabular-nums;
     }
+
+    /* ── Landscape layout ── */
+    @media (orientation: landscape) {
+      #main {
+        flex-direction: row;
+      }
+      #worldWrap {
+        flex: 0 0 55%;
+      }
+      #sidebar {
+        flex: 1 1 0;
+      }
+    }
+
+    /* ── Hint overlay ── */
+    #hint {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.55);
+      color: #8899bb;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      pointer-events: none;
+      opacity: 1;
+      transition: opacity 1s;
+      white-space: nowrap;
+    }
+    #hint.hidden { opacity: 0; }
   </style>
 </head>
 <body>
 
 <header id="header">
-  <span class="left" id="tickDisplay">Tick 0</span>
-  <span class="mid" id="popDisplay">H:30 C:6</span>
-  <span class="right">
-    <button class="hbtn" id="pauseBtn">Pause</button>
-    <button class="hbtn" id="saveBtn">Save</button>
-    <button class="hbtn" id="loadBtn">Load</button>
-  </span>
+  <span id="tickDisplay">Tick 0</span>
+  <span id="popDisplay">H:30 · C:6</span>
+  <button class="hbtn" id="pauseBtn">Pause</button>
+  <button class="hbtn" id="saveBtn">Save</button>
+  <button class="hbtn" id="loadBtn">Load</button>
 </header>
 
 <div id="main">
-<div id="worldWrap">
-  <canvas id="worldCanvas"></canvas>
-</div>
+  <div id="worldWrap">
+    <canvas id="worldCanvas"></canvas>
+    <div id="hint">Tap a creature to inspect it</div>
+  </div>
 
-<div id="sidebar">
-  <canvas id="popCanvas"></canvas>
-  <div id="brainsRow">
-    <div class="brainWrap">
-      <div class="brainLabel" id="brainLabel0">Fit #1</div>
-      <canvas class="brainCanvas" id="brain0"></canvas>
-    </div>
-    <div class="brainWrap">
-      <div class="brainLabel" id="brainLabel1">Fit #2</div>
-      <canvas class="brainCanvas" id="brain1"></canvas>
-    </div>
-    <div class="brainWrap">
-      <div class="brainLabel" id="brainLabel2">Fit #3</div>
-      <canvas class="brainCanvas" id="brain2"></canvas>
+  <div id="sidebar">
+    <canvas id="popCanvas"></canvas>
+    <div id="brainsRow">
+      <div class="brainWrap">
+        <div class="brainLabel" id="brainLabel0">Top Fit #1</div>
+        <canvas class="brainCanvas" id="brain0"></canvas>
+      </div>
+      <div class="brainWrap">
+        <div class="brainLabel" id="brainLabel1">Top Fit #2</div>
+        <canvas class="brainCanvas" id="brain1"></canvas>
+      </div>
+      <div class="brainWrap">
+        <div class="brainLabel" id="brainLabel2">Top Fit #3</div>
+        <canvas class="brainCanvas" id="brain2"></canvas>
+      </div>
     </div>
   </div>
 </div>
-</div><!-- #main -->
 
 <div id="creaturePanel">
   <div id="panelHandle"></div>
-  <button id="closePanelBtn">✕</button>
-  <div id="panelTitle">Creature Info</div>
+  <div id="panelRow">
+    <div id="panelTitle">Creature Info</div>
+    <button id="closePanelBtn">✕</button>
+  </div>
   <canvas id="brainDetail"></canvas>
   <div id="panelStats"></div>
 </div>
