@@ -399,21 +399,6 @@
       font-size: 14px;
     }
 
-    /* ── Zoom indicator ── */
-    #zoomBadge {
-      position: absolute;
-      top: 8px; right: 8px;
-      background: rgba(0,0,0,0.6);
-      color: #aabbee;
-      font-size: 11px;
-      padding: 3px 7px;
-      border-radius: 12px;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.3s;
-    }
-    #zoomBadge.visible { opacity: 1; }
-
     /* ── Landscape layout ── */
     @media (orientation: landscape) {
       #main { flex-direction: row; }
@@ -457,8 +442,7 @@
 <div id="main">
   <div id="worldWrap">
     <canvas id="worldCanvas"></canvas>
-    <div id="zoomBadge">3×</div>
-    <div id="hint">Tap a creature · Pinch to zoom</div>
+    <div id="hint">Tap a creature to inspect it</div>
   </div>
 
   <div id="sidebar">
