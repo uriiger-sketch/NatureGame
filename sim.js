@@ -21,7 +21,6 @@ function randn() {
 
 // ─── Math helpers ──────────────────────────────────────────────────────────
 function torus(x, w) {
-  // signed toroidal delta: equivalent to MATLAB mod(x + w/2, w) - w/2
   return ((x + w * 0.5) % w + w) % w - w * 0.5;
 }
 function wrapToPi(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
@@ -34,11 +33,6 @@ function hsvToRgb(h, s, v) {
   const i = Math.floor(h * 6), f = h * 6 - i;
   const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
   return [[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][i % 6];
-}
-
-function weightColor(w) {
-  const g = Math.round(((Math.max(-1, Math.min(1, w)) + 1) / 2) * 255);
-  return `rgb(${g},${g},${g})`;
 }
 
 // ─── Matrix (row-major, Float64Array backed) ───────────────────────────────
@@ -124,11 +118,10 @@ class Matrix {
   }
 
   toJSON() { return { rows: this.rows, cols: this.cols, data: Array.from(this.data) }; }
-
   static fromJSON(o) { return new Matrix(o.rows, o.cols, new Float64Array(o.data)); }
 }
 
-// matrix × column vector, applying tanh to output
+// matrix × column vector, tanh activation
 function matMulTanh(M, x) {
   const out = new Float64Array(M.rows);
   for (let r = 0; r < M.rows; r++) {
@@ -137,6 +130,26 @@ function matMulTanh(M, x) {
     out[r] = Math.tanh(s);
   }
   return out;
+}
+
+// Forward pass returning only the output
+function nnForward(W, inp) {
+  let x = inp;
+  for (let l = 0; l < W.length - 1; l++) x = matMulTanh(W[l], x);
+  return matMulTanh(W[W.length - 1], x);
+}
+
+// Forward pass returning output + all per-layer activations (for brain vis)
+function nnForwardFull(W, inp) {
+  const acts = [inp];
+  let x = inp;
+  for (let l = 0; l < W.length - 1; l++) {
+    x = matMulTanh(W[l], x);
+    acts.push(x);
+  }
+  const out = matMulTanh(W[W.length - 1], x);
+  acts.push(out);
+  return { out, acts };
 }
 
 // ─── Simulation parameters ─────────────────────────────────────────────────
@@ -153,6 +166,10 @@ const P = {
   maxAgeHerb: 1500, maxAgeCarn: 3000, modeThresh: 0.10,
   nInput: 5, nOutput: 3,
 };
+
+// Ticks per frame for each speed-slider step
+const SPEED_STEPS = [0.1, 0.25, 0.5, 1, 2, 4, 8];
+const SPEED_LABELS = ['¹⁄₁₀×', '¼×', '½×', '1×', '2×', '4×', '8×'];
 
 // ─── Creature helpers ──────────────────────────────────────────────────────
 function geneColor(cre) {
@@ -174,7 +191,8 @@ function makeCreature(posX, posY, W, type, lineage, energy) {
     angle: rng() * 2 * Math.PI,
     W,
     energy: (energy !== undefined) ? energy : 55 + rng() * 12,
-    act: new Float64Array(P.nOutput),
+    act:  new Float64Array(P.nOutput),
+    acts: null,
     color: [1, 1, 1],
     age: 0, fitness: 30,
     type,
@@ -191,8 +209,8 @@ function polyVerts(cre) {
   const ns  = Math.max(3, Math.min(8, 3 + Math.round((sig + 1) * 2.5)));
   const sG  = 0.8 + 0.6 / (1 + Math.exp(-Wlast.stdAll() * 3));
   let R = P.bodyRadius * sG;
-  if (cre.fadeTick > 0 && cre.fadeInit > 0)      R *= cre.fadeTick / cre.fadeInit;
-  else if (cre.fadeInit > 0)                       R = 0;
+  if (cre.fadeTick > 0 && cre.fadeInit > 0) R *= cre.fadeTick / cre.fadeInit;
+  else if (cre.fadeInit > 0)                 R = 0;
   const vx = new Array(ns), vy = new Array(ns);
   for (let i = 0; i < ns; i++) {
     const th = (i / ns) * 2 * Math.PI + cre.angle;
@@ -204,7 +222,7 @@ function polyVerts(cre) {
 
 // ─── World state ───────────────────────────────────────────────────────────
 let creatures = [];
-let food      = [];  // [{x, y}]
+let food      = [];
 let tick      = 0;
 let baseW     = null;
 let rngSeed   = 1;
@@ -237,19 +255,11 @@ function spawnFood() {
     food.push({ x: rng() * P.worldSize, y: rng() * P.worldSize });
 }
 
-// ─── Neural network ────────────────────────────────────────────────────────
-function nnForward(W, inp) {
-  let x = inp;
-  for (let l = 0; l < W.length - 1; l++) x = matMulTanh(W[l], x);
-  return matMulTanh(W[W.length - 1], x);
-}
-
 // ─── Structural mutation ───────────────────────────────────────────────────
 function mutateNetworkStructure(W) {
   const outSize = P.nOutput;
-  let L = W.length - 1;  // hidden layer count
+  let L = W.length - 1;
 
-  // maybe add a hidden layer before output
   if (L < P.maxHiddenLayers && rng() < P.addLayerProb) {
     const nPrev = W[W.length - 2].rows;
     const nNew  = Math.max(2, Math.min(P.maxNeurons, Math.round(nPrev * (0.7 + 0.6 * rng()))));
@@ -257,7 +267,6 @@ function mutateNetworkStructure(W) {
     L++;
   }
 
-  // maybe delete a hidden layer
   if (L > 1 && rng() < P.delLayerProb) {
     const kill     = Math.floor(rng() * L);
     const prevCols = kill === 0 ? P.nInput : W[kill - 1].rows;
@@ -269,7 +278,6 @@ function mutateNetworkStructure(W) {
     L--;
   }
 
-  // maybe add a neuron to a random hidden layer
   if (L >= 1 && rng() < P.addNeuronProb) {
     const which = Math.floor(rng() * L);
     if (W[which].rows < P.maxNeurons) {
@@ -286,7 +294,6 @@ function simStep() {
   const n = creatures.length;
   if (n === 0) { spawnFood(); return; }
 
-  // extract state
   const posX     = new Float64Array(n);
   const posY     = new Float64Array(n);
   const velX     = new Float64Array(n);
@@ -315,7 +322,6 @@ function simStep() {
     lineage[k] = c.lineage | 0;
   }
 
-  // tick timers
   for (let k = 0; k < n; k++) {
     age[k]++;
     fit[k] += P.fitTick;
@@ -326,15 +332,14 @@ function simStep() {
 
   const WS = P.worldSize, SR = P.senseRadius;
 
-  // ── sense ──────────────────────────────────────────────────────────────
+  // ── Sense ─────────────────────────────────────────────────────────────
   const dx = new Float64Array(n);
   const dy = new Float64Array(n);
   const d  = new Float64Array(n).fill(SR);
 
-  // herbivores: toward food, or flee nearest predator if closer
+  // herbivores: toward food, flee if predator closer
   for (let h = 0; h < n; h++) {
     if (isCarn[h]) continue;
-
     let foodD2 = Infinity, fdx = 0, fdy = 0;
     for (let f = 0; f < food.length; f++) {
       const fx = torus(posX[h] - food[f].x, WS);
@@ -342,7 +347,6 @@ function simStep() {
       const d2 = fx * fx + fy * fy;
       if (d2 < foodD2) { foodD2 = d2; fdx = fx; fdy = fy; }
     }
-
     let predD2 = Infinity, pdx = 0, pdy = 0;
     for (let p = 0; p < n; p++) {
       if (!isCarn[p]) continue;
@@ -351,17 +355,14 @@ function simStep() {
       const d2 = px * px + py * py;
       if (d2 < predD2) { predD2 = d2; pdx = px; pdy = py; }
     }
-
     if (predD2 < foodD2 && predD2 < SR * SR) {
-      // flee: vector away from predator (herb - pred)
       dx[h] = pdx; dy[h] = pdy; d[h] = Math.sqrt(predD2);
     } else if (foodD2 < SR * SR) {
-      // forage: vector toward food (food - herb = -(herb - food))
       dx[h] = -fdx; dy[h] = -fdy; d[h] = Math.sqrt(foodD2);
     }
   }
 
-  // carnivores: sense nearest live herbivore within senseRadius
+  // carnivores: sense nearest live herbivore
   for (let cc = 0; cc < n; cc++) {
     if (!isCarn[cc]) continue;
     let bestD = SR, bx = 0, by = 0;
@@ -376,39 +377,34 @@ function simStep() {
   }
 
   // ── NN forward pass ────────────────────────────────────────────────────
-  const act = new Array(n);
+  const act  = new Array(n);
+  const acts = new Array(n);
   for (let k = 0; k < n; k++) {
     if (busy[k] > 0 || fade[k] > 0) {
-      act[k] = new Float64Array(P.nOutput);
+      act[k]  = new Float64Array(P.nOutput);
+      acts[k] = null;
       continue;
     }
-    act[k] = nnForward(creatures[k].W, new Float64Array([
-      dx[k], dy[k],
-      d[k] / SR,
-      E[k] / P.reproEnergy,
-      1,
-    ]));
+    const inp = new Float64Array([dx[k], dy[k], d[k] / SR, E[k] / P.reproEnergy, 1]);
+    const res = nnForwardFull(creatures[k].W, inp);
+    act[k]  = res.out;
+    acts[k] = res.acts;
   }
 
-  // ── interpret outputs → motion ─────────────────────────────────────────
+  // ── Interpret outputs → motion ─────────────────────────────────────────
   const MT = P.modeThresh;
   for (let k = 0; k < n; k++) {
     if (busy[k] > 0 || fade[k] > 0) { velX[k] = 0; velY[k] = 0; continue; }
     const modeRaw  = act[k][0];
     const thrustIn = Math.max(act[k][1], 0);
     const mode     = modeRaw > MT ? 1 : modeRaw < -MT ? -1 : 0;
-
     let theta = Math.atan2(dy[k], dx[k]);
-    if (mode === -1) theta += Math.PI;  // FLIGHT: reverse direction
-
+    if (mode === -1) theta += Math.PI;
     ang[k] += 3 * P.dt * wrapToPi(theta - ang[k]);
-
     if (mode !== 0) {
       velX[k] += thrustIn * Math.cos(ang[k]);
       velY[k] += thrustIn * Math.sin(ang[k]);
     }
-
-    // clamp speed
     const spd = hypot2(velX[k], velY[k]);
     if (spd > P.maxSpeed) {
       const sc = P.maxSpeed / spd;
@@ -416,7 +412,7 @@ function simStep() {
     }
   }
 
-  // ── physics (integrate + energy decay) ────────────────────────────────
+  // ── Physics ────────────────────────────────────────────────────────────
   for (let k = 0; k < n; k++) {
     if (busy[k] > 0 || fade[k] > 0) continue;
     posX[k] = posmod(posX[k] + velX[k] * P.dt, WS);
@@ -424,12 +420,12 @@ function simStep() {
     const spd = hypot2(velX[k], velY[k]);
     E[k] -= P.energyDecay + P.moveCost * spd;
     if (isCarn[k]) E[k] -= P.predMoveCost * spd;
-    if (E[k] > 200) E[k] = 200;  // energy cap prevents runaway accumulation
+    if (E[k] > 200) E[k] = 200;
   }
 
-  // ── herbivores eat food ────────────────────────────────────────────────
-  const r2     = P.bodyRadius * P.bodyRadius;
-  const eaten  = new Uint8Array(food.length);
+  // ── Herbivores eat food ────────────────────────────────────────────────
+  const r2    = P.bodyRadius * P.bodyRadius;
+  const eaten = new Uint8Array(food.length);
   for (let h = 0; h < n; h++) {
     if (isCarn[h] || fade[h] > 0) continue;
     for (let f = 0; f < food.length; f++) {
@@ -445,13 +441,13 @@ function simStep() {
   }
   food = food.filter((_, f) => !eaten[f]);
 
-  // ── predator attacks ───────────────────────────────────────────────────
+  // ── Predator attacks ───────────────────────────────────────────────────
   const EAT_TICKS = 10;
   for (let cc = 0; cc < n; cc++) {
     if (!isCarn[cc] || busy[cc] > 0 || fade[cc] > 0) continue;
     let bestD = 2 * P.bodyRadius, bestPrey = -1;
     for (let p = 0; p < n; p++) {
-      if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;  // only eat herbs
+      if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;
       const dist = hypot2(torus(posX[p] - posX[cc], WS), torus(posY[p] - posY[cc], WS));
       if (dist < bestD) { bestD = dist; bestPrey = p; }
     }
@@ -459,12 +455,12 @@ function simStep() {
       busy[cc]           = EAT_TICKS;
       fade[bestPrey]     = EAT_TICKS;
       fadeInit[bestPrey] = EAT_TICKS;
-      E[cc] += E[bestPrey] / 2;  // absorb half of prey's energy
+      E[cc] += E[bestPrey] / 2;
       fit[cc] += P.fitFood;
     }
   }
 
-  // ── deaths ─────────────────────────────────────────────────────────────
+  // ── Deaths ─────────────────────────────────────────────────────────────
   const keep = new Uint8Array(n).fill(1);
   for (let k = 0; k < n; k++) {
     const tooOld  = isCarn[k] ? age[k] >= P.maxAgeCarn : age[k] >= P.maxAgeHerb;
@@ -472,7 +468,6 @@ function simStep() {
     if (tooOld || fadeDead || E[k] <= 0) keep[k] = 0;
   }
 
-  // write back survivors
   const alive = [];
   for (let k = 0; k < n; k++) {
     if (!keep[k]) continue;
@@ -482,6 +477,7 @@ function simStep() {
     c.angle    = ang[k];
     c.energy   = E[k];   c.fitness = fit[k];
     c.age      = age[k]; c.act     = act[k];
+    c.acts     = acts[k] || c.acts;
     c.busyTime = busy[k];
     c.fadeTick = fade[k]; c.fadeInit = fadeInit[k];
     c.immature = imm[k];
@@ -489,9 +485,7 @@ function simStep() {
   }
   creatures = alive;
 
-  // ── reproduction ───────────────────────────────────────────────────────
-  // reproduce when NN says so OR when energy exceeds threshold (safety net
-  // for creatures whose NN never outputs a positive reproduce signal)
+  // ── Reproduction ───────────────────────────────────────────────────────
   const toRepro = [];
   for (let k = 0; k < creatures.length; k++) {
     const c = creatures[k];
@@ -521,7 +515,7 @@ function reproduce(i) {
     mutated, par.type, par.lineage, eHalf,
   );
   chi.fitness  = par.fitness / 2;
-  chi.immature = Math.round(2 / P.dt);  // 10-tick invulnerability shield
+  chi.immature = Math.round(2 / P.dt);
   chi.angle    = rng() * 2 * Math.PI;
   if (par.type === 'herb') chi.color = geneColor(chi);
   creatures.push(chi);
@@ -556,9 +550,19 @@ class Renderer {
     this.scale   = 1;
     this.offsetX = 0;
     this.offsetY = 0;
+
+    // Zoom state (smooth animated)
+    this.zoom       = 1;
+    this.targetZoom = 1;
+    this.zoomCX     = P.worldSize / 2;
+    this.zoomCY     = P.worldSize / 2;
+    this.targetCX   = P.worldSize / 2;
+    this.targetCY   = P.worldSize / 2;
+
+    this._lastSel = -1;
+    this._pulseT  = 0;  // for selection pulse animation
   }
 
-  // Call after layout is settled
   resize() {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3);
     this._size(this.wCanvas,  this.wCtx);
@@ -579,22 +583,27 @@ class Renderer {
     const h = Math.max(1, canvas.clientHeight);
     const pw = Math.round(w * d), ph = Math.round(h * d);
     if (canvas.width !== pw || canvas.height !== ph) {
-      canvas.width  = pw;
-      canvas.height = ph;
+      canvas.width = pw; canvas.height = ph;
     }
-    // always reset transform so DPR scaling is correct
     ctx.setTransform(d, 0, 0, d, 0, 0);
   }
 
-  // world → canvas logical
-  wx(x) { return this.offsetX + x * this.scale; }
-  wy(y) { return this.offsetY + (P.worldSize - y) * this.scale; }
+  // World-to-canvas (before zoom transform; used inside save/restore block)
+  _wx(x) { return this.offsetX + x * this.scale; }
+  _wy(y) { return this.offsetY + (P.worldSize - y) * this.scale; }
 
-  // canvas logical → world (for tap detection)
+  // Canvas logical → world (accounting for zoom)
   canvasToWorld(cx, cy) {
+    let lx = cx, ly = cy;
+    if (this.zoom > 1.01) {
+      const wcx = this._wx(this.zoomCX);
+      const wcy = this._wy(this.zoomCY);
+      lx = (cx - wcx) / this.zoom + wcx;
+      ly = (cy - wcy) / this.zoom + wcy;
+    }
     return {
-      x: (cx - this.offsetX) / this.scale,
-      y: P.worldSize - (cy - this.offsetY) / this.scale,
+      x: (lx - this.offsetX) / this.scale,
+      y: P.worldSize - (ly - this.offsetY) / this.scale,
     };
   }
 
@@ -604,20 +613,36 @@ class Renderer {
     const cw  = this.wCanvas.clientWidth;
     const ch  = this.wCanvas.clientHeight;
 
+    // Smooth zoom/pan animation
+    this.zoom   += (this.targetZoom - this.zoom)   * 0.12;
+    this.zoomCX += (this.targetCX   - this.zoomCX) * 0.12;
+    this.zoomCY += (this.targetCY   - this.zoomCY) * 0.12;
+    if (Math.abs(this.zoom - this.targetZoom) < 0.005) this.zoom = this.targetZoom;
+
     ctx.fillStyle = '#050509';
     ctx.fillRect(0, 0, cw, ch);
 
-    // food (all in one path)
+    ctx.save();
+    // Apply zoom centered on zoomC
+    if (this.zoom > 1.001) {
+      const cx = this._wx(this.zoomCX);
+      const cy = this._wy(this.zoomCY);
+      ctx.translate(cx, cy);
+      ctx.scale(this.zoom, this.zoom);
+      ctx.translate(-cx, -cy);
+    }
+
+    // Food (batched arc path)
     ctx.fillStyle = '#2ecc40';
     ctx.beginPath();
     for (const f of food) {
-      const fx = this.wx(f.x), fy = this.wy(f.y);
+      const fx = this._wx(f.x), fy = this._wy(f.y);
       ctx.moveTo(fx + 2.5, fy);
       ctx.arc(fx, fy, 2.5, 0, 6.2832);
     }
     ctx.fill();
 
-    // creatures
+    // Creatures
     for (let k = 0; k < creatures.length; k++) {
       const c = creatures[k];
       const { vx, vy, R } = polyVerts(c);
@@ -625,21 +650,38 @@ class Renderer {
       const [r, g, b] = c.color;
       ctx.fillStyle = `rgb(${(r*255)|0},${(g*255)|0},${(b*255)|0})`;
       ctx.beginPath();
-      ctx.moveTo(this.wx(vx[0]), this.wy(vy[0]));
-      for (let i = 1; i < vx.length; i++) ctx.lineTo(this.wx(vx[i]), this.wy(vy[i]));
+      ctx.moveTo(this._wx(vx[0]), this._wy(vy[0]));
+      for (let i = 1; i < vx.length; i++) ctx.lineTo(this._wx(vx[i]), this._wy(vy[i]));
       ctx.closePath();
       ctx.fill();
     }
 
-    // selection halo
+    // Selected creature highlight (pulsing ring)
     if (selectedIdx >= 0 && selectedIdx < creatures.length) {
       const c = creatures[selectedIdx];
+      this._pulseT = (this._pulseT + 0.05) % (2 * Math.PI);
+      const pulse = 1 + 0.18 * Math.sin(this._pulseT);
+      const haloR = P.bodyRadius * 4 * this.scale * pulse;
+
+      ctx.shadowColor = '#ffdd00';
+      ctx.shadowBlur  = 14;
       ctx.strokeStyle = '#ffdd00';
-      ctx.lineWidth = 2;
+      ctx.lineWidth   = 2.5;
       ctx.beginPath();
-      ctx.arc(this.wx(c.posX), this.wy(c.posY), P.bodyRadius * 3 * this.scale, 0, 6.2832);
+      ctx.arc(this._wx(c.posX), this._wy(c.posY), haloR, 0, 6.2832);
       ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Direction arrow
+      const ax = this._wx(c.posX) + Math.cos(-c.angle) * haloR * 1.4;
+      const ay = this._wy(c.posY) + Math.sin(-c.angle) * haloR * 1.4;
+      ctx.fillStyle = '#ffdd00';
+      ctx.beginPath();
+      ctx.arc(ax, ay, 3, 0, 6.2832);
+      ctx.fill();
     }
+
+    ctx.restore();
   }
 
   // ── Population graph ───────────────────────────────────────────────────
@@ -649,7 +691,6 @@ class Renderer {
     const ch  = this.pCanvas.clientHeight;
     ctx.fillStyle = '#06060d';
     ctx.fillRect(0, 0, cw, ch);
-
     if (popCount < 2) return;
 
     let maxVal = 4;
@@ -678,7 +719,6 @@ class Renderer {
     line(popHerb, '#3b3', 1.5);
     line(popCarn, '#c33', 1.5);
 
-    // total
     ctx.strokeStyle = '#667';
     ctx.lineWidth   = 1;
     ctx.beginPath();
@@ -690,87 +730,197 @@ class Renderer {
     }
     ctx.stroke();
 
-    // legend
     ctx.font = '9px -apple-system,sans-serif';
     ctx.fillStyle = '#3b3'; ctx.fillText('herb', 4, 11);
     ctx.fillStyle = '#c33'; ctx.fillText('carn', 4, 22);
   }
 
   // ── Brain diagram ──────────────────────────────────────────────────────
-  drawBrain(ctx, cre, w, h) {
+  // detail=true → rich colored visualization; false → fast mini version
+  drawBrain(ctx, cre, w, h, detail) {
     ctx.clearRect(0, 0, w, h);
     if (!cre || !w || !h) return;
 
-    const W = cre.W;
-    const L = W.length - 1;  // hidden layer count
+    const W    = cre.W;
+    const acts = cre.acts;
+    const L    = W.length - 1;
 
-    // layer sizes: [nInput, h0, h1, ..., nOutput]
     const layers = [W[0].cols];
     for (let l = 0; l < L; l++) layers.push(W[l].rows);
     layers.push(W[W.length - 1].rows);
 
-    const nL    = layers.length;
-    const xGap  = w / (nL + 1);
-    const xPos  = layers.map((_, li) => xGap * (li + 1));
-    const yPos  = layers.map(cnt => {
+    const nL   = layers.length;
+    const xGap = w / (nL + 1);
+    const xPos = layers.map((_, li) => xGap * (li + 1));
+    const yPos = layers.map((cnt) => {
       const gap = h / (cnt + 1);
       return Array.from({ length: cnt }, (_, i) => gap * (i + 1));
     });
 
-    // edges (grouped by color bucket for fewer stroke calls)
-    const MAX_N = 18;
-    ctx.lineWidth = 0.7;
-    for (let li = 0; li < nL - 1; li++) {
-      const sN = layers[li], dN = layers[li + 1];
-      if (sN > MAX_N || dN > MAX_N) continue;
-      const buckets = {};
-      for (let s = 0; s < sN; s++) {
-        for (let dst = 0; dst < dN; dst++) {
-          const col = weightColor(W[li].get(dst, s));
-          (buckets[col] = buckets[col] || []).push(xPos[li], yPos[li][s], xPos[li+1], yPos[li+1][dst]);
-        }
-      }
-      for (const [col, pts] of Object.entries(buckets)) {
-        ctx.strokeStyle = col;
-        ctx.beginPath();
-        for (let p = 0; p < pts.length; p += 4) {
-          ctx.moveTo(pts[p], pts[p+1]);
-          ctx.lineTo(pts[p+2], pts[p+3]);
-        }
-        ctx.stroke();
-      }
-    }
+    const MAX_VIS_N = 28;  // don't draw edges for very large layers
 
-    // nodes
-    const nodeR = Math.max(2, Math.min(5, xGap * 0.18));
-    for (let li = 0; li < nL; li++) {
-      if (layers[li] > 40) {
-        // just label the count
-        ctx.fillStyle = '#556';
-        ctx.font = `${Math.round(nodeR * 2.5)}px sans-serif`;
-        ctx.fillText(`×${layers[li]}`, xPos[li] - nodeR * 2, h / 2);
-        continue;
+    if (detail) {
+      // ── Rich visualization ──────────────────────────────────────────
+      const INPUT_LABELS  = ['dx', 'dy', 'dist', 'nrg', '1'];
+      const OUTPUT_LABELS = ['mode', 'push', 'rep'];
+
+      // Edges: green=positive, red=negative, width ∝ |weight|
+      for (let li = 0; li < nL - 1; li++) {
+        const sN = layers[li], dN = layers[li + 1];
+        if (sN > MAX_VIS_N || dN > MAX_VIS_N) continue;
+        for (let s = 0; s < sN; s++) {
+          for (let dst = 0; dst < dN; dst++) {
+            const wv  = W[li].get(dst, s);
+            const mag = Math.abs(wv);
+            if (mag < 0.06) continue;
+            const alpha = Math.min(0.85, mag * 0.9);
+            const lw    = Math.max(0.4, Math.min(3.5, mag * 2.8));
+            ctx.strokeStyle = wv > 0
+              ? `rgba(40,210,90,${alpha})`
+              : `rgba(220,55,55,${alpha})`;
+            ctx.lineWidth = lw;
+            ctx.beginPath();
+            ctx.moveTo(xPos[li], yPos[li][s]);
+            ctx.lineTo(xPos[li + 1], yPos[li + 1][dst]);
+            ctx.stroke();
+          }
+        }
       }
-      ctx.fillStyle = li === 0 ? '#5599ff' : li === nL - 1 ? '#ffaa33' : '#cccccc';
-      ctx.beginPath();
-      for (let ni = 0; ni < layers[li]; ni++) {
-        ctx.moveTo(xPos[li] + nodeR, yPos[li][ni]);
-        ctx.arc(xPos[li], yPos[li][ni], nodeR, 0, 6.2832);
+
+      // Nodes
+      const nodeR = Math.max(6, Math.min(13, xGap * 0.28));
+      const FONT  = `bold ${Math.round(nodeR * 0.9)}px -apple-system,sans-serif`;
+
+      for (let li = 0; li < nL; li++) {
+        const cnt = layers[li];
+        const actArr = acts ? acts[li] : null;
+
+        for (let ni = 0; ni < cnt; ni++) {
+          if (cnt > MAX_VIS_N) {
+            ctx.fillStyle = '#444466';
+            ctx.font = `${Math.round(nodeR * 1.8)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`×${cnt}`, xPos[li], h / 2);
+            break;
+          }
+
+          const x   = xPos[li];
+          const y   = yPos[li][ni];
+          const act = actArr ? actArr[ni] : 0;
+
+          // Shadow glow for active nodes
+          const absAct = Math.abs(act);
+          if (absAct > 0.3) {
+            ctx.shadowColor = act > 0 ? '#44ff88' : '#ff4444';
+            ctx.shadowBlur  = nodeR * absAct * 1.5;
+          }
+
+          // Node background
+          let fillColor;
+          if (li === 0) {
+            fillColor = '#1a3a8a';
+          } else if (li === nL - 1) {
+            fillColor = '#7a3000';
+          } else {
+            const L_pct = Math.round(12 + ((act + 1) / 2) * 55);
+            fillColor = `hsl(230,60%,${L_pct}%)`;
+          }
+
+          ctx.beginPath();
+          ctx.arc(x, y, nodeR, 0, 6.2832);
+          ctx.fillStyle = fillColor;
+          ctx.fill();
+
+          ctx.shadowBlur = 0;
+
+          // Activation fill overlay
+          if (actArr) {
+            const t = (act + 1) / 2;  // 0..1
+            ctx.beginPath();
+            ctx.arc(x, y, nodeR * 0.58, 0, 6.2832);
+            ctx.fillStyle = act > 0
+              ? `rgba(60,255,120,${Math.min(0.9, act * 1.1)})`
+              : `rgba(255,60,60,${Math.min(0.9, -act * 1.1)})`;
+            ctx.fill();
+          }
+
+          // Node border
+          ctx.beginPath();
+          ctx.arc(x, y, nodeR, 0, 6.2832);
+          ctx.strokeStyle = li === 0 ? '#4488ff'
+                          : li === nL - 1 ? '#ff8833'
+                          : '#555588';
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+
+          // Labels for input and output
+          ctx.font = FONT;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          if (li === 0 && ni < INPUT_LABELS.length) {
+            ctx.fillStyle = '#7799cc';
+            ctx.fillText(INPUT_LABELS[ni], x, y + nodeR + 2);
+          } else if (li === nL - 1 && ni < OUTPUT_LABELS.length) {
+            ctx.fillStyle = '#cc7733';
+            ctx.fillText(OUTPUT_LABELS[ni], x, y + nodeR + 2);
+          }
+        }
       }
-      ctx.fill();
+
+    } else {
+      // ── Fast mini brain (small side panels) ────────────────────────
+      ctx.lineWidth = 0.7;
+      for (let li = 0; li < nL - 1; li++) {
+        const sN = layers[li], dN = layers[li + 1];
+        if (sN > MAX_VIS_N || dN > MAX_VIS_N) continue;
+        const buckets = {};
+        for (let s = 0; s < sN; s++) {
+          for (let dst = 0; dst < dN; dst++) {
+            const wv  = W[li].get(dst, s);
+            const col = wv > 0 ? '#2a9' : '#933';
+            (buckets[col] = buckets[col] || []).push(xPos[li], yPos[li][s], xPos[li+1], yPos[li+1][dst]);
+          }
+        }
+        for (const [col, pts] of Object.entries(buckets)) {
+          ctx.strokeStyle = col;
+          ctx.beginPath();
+          for (let p = 0; p < pts.length; p += 4) {
+            ctx.moveTo(pts[p], pts[p+1]);
+            ctx.lineTo(pts[p+2], pts[p+3]);
+          }
+          ctx.stroke();
+        }
+      }
+
+      const nodeR = Math.max(2, Math.min(5, xGap * 0.18));
+      for (let li = 0; li < nL; li++) {
+        if (layers[li] > 40) {
+          ctx.fillStyle = '#445566';
+          ctx.font = `${Math.round(nodeR * 2.5)}px sans-serif`;
+          ctx.fillText(`×${layers[li]}`, xPos[li] - nodeR * 2, h / 2);
+          continue;
+        }
+        ctx.fillStyle = li === 0 ? '#3366aa' : li === nL - 1 ? '#aa6622' : '#888';
+        ctx.beginPath();
+        for (let ni = 0; ni < layers[li]; ni++) {
+          ctx.moveTo(xPos[li] + nodeR, yPos[li][ni]);
+          ctx.arc(xPos[li], yPos[li][ni], nodeR, 0, 6.2832);
+        }
+        ctx.fill();
+      }
     }
   }
 
-  // ── Brain panel updates ────────────────────────────────────────────────
   drawBrainPanels(topIdxs, selectedIdx) {
     for (let k = 0; k < 3; k++) {
-      const c  = this.bCanvases[k];
+      const c   = this.bCanvases[k];
       const cre = (topIdxs[k] !== undefined) ? creatures[topIdxs[k]] : null;
-      this.drawBrain(this.bCtxs[k], cre, c.clientWidth, c.clientHeight);
+      this.drawBrain(this.bCtxs[k], cre, c.clientWidth, c.clientHeight, false);
     }
     if (selectedIdx >= 0 && selectedIdx < creatures.length) {
       const dc = this.dCanvas;
-      this.drawBrain(this.dCtx, creatures[selectedIdx], dc.clientWidth, dc.clientHeight);
+      this.drawBrain(this.dCtx, creatures[selectedIdx], dc.clientWidth, dc.clientHeight, true);
     }
   }
 }
@@ -782,24 +932,33 @@ class UIController {
     this.selectedIdx = -1;
     this._paused     = false;
 
-    this._tickEl    = document.getElementById('tickDisplay');
-    this._popEl     = document.getElementById('popDisplay');
-    this._panel     = document.getElementById('creaturePanel');
+    this._tickEl     = document.getElementById('tickDisplay');
+    this._popEl      = document.getElementById('popDisplay');
+    this._panel      = document.getElementById('creaturePanel');
     this._panelTitle = document.getElementById('panelTitle');
     this._panelStats = document.getElementById('panelStats');
-    this._hint      = document.getElementById('hint');
-    this._hintShown = false;
+    this._hint       = document.getElementById('hint');
+    this._hintShown  = false;
     this._brainLabels = [0,1,2].map(i => document.getElementById(`brainLabel${i}`));
+    this._zoomBadge  = document.getElementById('zoomBadge');
 
-    // touch on world canvas
     const wc = renderer.wCanvas;
+
+    // Tap to select creature (and zoom)
     wc.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) {
+        this._pinchStart(e);
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       const t    = e.changedTouches[0];
       const rect = wc.getBoundingClientRect();
-      this._onTap(
-        renderer.canvasToWorld(t.clientX - rect.left, t.clientY - rect.top)
-      );
+      this._onTap(renderer.canvasToWorld(t.clientX - rect.left, t.clientY - rect.top));
+    }, { passive: false });
+
+    wc.addEventListener('touchmove', e => {
+      if (e.touches.length === 2) { this._pinchMove(e); e.preventDefault(); }
     }, { passive: false });
 
     wc.addEventListener('click', e => {
@@ -807,17 +966,73 @@ class UIController {
       this._onTap(renderer.canvasToWorld(e.clientX - rect.left, e.clientY - rect.top));
     });
 
-    // close panel on handle drag or tap outside
+    // Pinch state
+    this._pinchDist0 = 0;
+    this._pinchZoom0 = 1;
+
+    // Creature panel close
     document.getElementById('closePanelBtn').addEventListener('click', () => this._closePanel());
     document.getElementById('panelHandle').addEventListener('click', () => this._closePanel());
 
+    // Pause
     document.getElementById('pauseBtn').addEventListener('click', () => {
       this._paused = !this._paused;
-      document.getElementById('pauseBtn').textContent = this._paused ? 'Resume' : 'Pause';
+      document.getElementById('pauseBtn').textContent = this._paused ? '▶' : '⏸';
     });
 
-    document.getElementById('saveBtn').addEventListener('click', () => this._save());
+    // Speed slider
+    const speedSlider = document.getElementById('speedSlider');
+    const speedLabel  = document.getElementById('speedLabel');
+    speedSlider.addEventListener('input', () => {
+      speedLabel.textContent = SPEED_LABELS[speedSlider.value | 0];
+    });
+
+    // Settings button
+    const configPanel = document.getElementById('configPanel');
+    document.getElementById('settingsBtn').addEventListener('click', () => {
+      configPanel.classList.toggle('open');
+    });
+    document.getElementById('closeConfigBtn').addEventListener('click', () => {
+      configPanel.classList.remove('open');
+    });
+
+    // Config sliders — live-update labels
+    const cfgSliders = [
+      ['cfgN0',    'cfgN0Val'],
+      ['cfgNpred', 'cfgNpredVal'],
+      ['cfgFood',  'cfgFoodVal'],
+      ['cfgWorld', 'cfgWorldVal'],
+      ['cfgSeed',  'cfgSeedVal'],
+    ];
+    for (const [id, valId] of cfgSliders) {
+      const el = document.getElementById(id);
+      const vl = document.getElementById(valId);
+      el.addEventListener('input', () => { vl.textContent = el.value; });
+    }
+
+    // Restart
+    document.getElementById('restartBtn').addEventListener('click', () => {
+      P.N0        = parseInt(document.getElementById('cfgN0').value);
+      P.Npred     = parseInt(document.getElementById('cfgNpred').value);
+      P.foodCount = parseInt(document.getElementById('cfgFood').value);
+      P.worldSize = parseInt(document.getElementById('cfgWorld').value);
+      const seed  = parseInt(document.getElementById('cfgSeed').value);
+      configPanel.classList.remove('open');
+      this._closePanel();
+      renderer.zoom = 1; renderer.targetZoom = 1;
+      renderer.zoomCX = P.worldSize / 2; renderer.targetCX = P.worldSize / 2;
+      renderer.zoomCY = P.worldSize / 2; renderer.targetCY = P.worldSize / 2;
+      initWorld(seed);
+      renderer.resize();
+    });
+
+    // Save / load
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      configPanel.classList.remove('open');
+      this._save();
+    });
     document.getElementById('loadBtn').addEventListener('click', () => {
+      configPanel.classList.remove('open');
       document.getElementById('fileInput').click();
     });
     document.getElementById('fileInput').addEventListener('change', e => {
@@ -829,20 +1044,50 @@ class UIController {
       e.target.value = '';
     });
 
-    // prevent all body scrolling on touch
+    // Prevent body scroll on touch
     document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
   }
 
-  get paused() { return this._paused; }
+  get paused()          { return this._paused; }
+  get ticksPerFrame()   {
+    const v = document.getElementById('speedSlider').value | 0;
+    return SPEED_STEPS[v];
+  }
+
+  _pinchStart(e) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    this._pinchDist0 = Math.hypot(dx, dy);
+    this._pinchZoom0 = this.renderer.zoom;
+  }
+
+  _pinchMove(e) {
+    const dx   = e.touches[0].clientX - e.touches[1].clientX;
+    const dy   = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.hypot(dx, dy);
+    if (this._pinchDist0 < 1) return;
+    const newZoom = Math.max(1, Math.min(10, this._pinchZoom0 * dist / this._pinchDist0));
+    this.renderer.targetZoom = newZoom;
+    this.renderer.zoom       = newZoom;
+    this._updateZoomBadge(newZoom);
+  }
+
+  _updateZoomBadge(z) {
+    const badge = this._zoomBadge;
+    if (z <= 1.05) {
+      badge.classList.remove('visible');
+    } else {
+      badge.textContent = `${z.toFixed(1)}×`;
+      badge.classList.add('visible');
+    }
+  }
 
   _onTap({ x, y }) {
-    // show hint once creature selected
     if (!this._hintShown) {
       this._hint.classList.add('hidden');
       this._hintShown = true;
     }
 
-    // hit radius in world units: at least ~12 units for comfortable tap on phone
     const hitR = Math.max(P.bodyRadius * 8, 12);
     let bestD = hitR, bestK = -1;
     for (let k = 0; k < creatures.length; k++) {
@@ -854,6 +1099,12 @@ class UIController {
     this.selectedIdx = bestK;
     if (bestK >= 0) {
       this._panel.classList.add('open');
+      // Zoom in on selected creature
+      const c = creatures[bestK];
+      this.renderer.targetZoom = 4;
+      this.renderer.targetCX   = c.posX;
+      this.renderer.targetCY   = c.posY;
+      this._updateZoomBadge(4);
     } else {
       this._closePanel();
     }
@@ -862,6 +1113,8 @@ class UIController {
   _closePanel() {
     this._panel.classList.remove('open');
     this.selectedIdx = -1;
+    this.renderer.targetZoom = 1;
+    this._updateZoomBadge(1);
   }
 
   updateHeader(nHerb, nCarn) {
@@ -875,7 +1128,7 @@ class UIController {
       if (idx !== undefined && idx < creatures.length) {
         const c = creatures[idx];
         this._brainLabels[k].textContent =
-          `${c.type === 'carn' ? 'C' : 'H'} F${c.fitness.toFixed(0)} E${c.energy.toFixed(0)}`;
+          `${c.type === 'carn' ? '🔴' : '🟢'} F${c.fitness.toFixed(0)} E${c.energy.toFixed(0)}`;
       } else {
         this._brainLabels[k].textContent = `Top Fit #${k+1}`;
       }
@@ -887,11 +1140,21 @@ class UIController {
     if (idx < 0 || idx >= creatures.length) return;
     const c = creatures[idx];
     const layerStr = [c.W[0].cols, ...c.W.map(m => m.rows)].join('→');
-    this._panelTitle.textContent =
-      (c.type === 'carn' ? 'Carnivore' : 'Herbivore') + `  #${idx}`;
+    const speed    = hypot2(c.velX, c.velY).toFixed(1);
+    const typeName = c.type === 'carn' ? '🔴 Carnivore' : '🟢 Herbivore';
+    this._panelTitle.textContent = `${typeName}  #${idx}`;
     this._panelStats.innerHTML =
-      `Energy: ${c.energy.toFixed(1)}  &middot;  Fitness: ${c.fitness.toFixed(0)}<br>` +
-      `Age: ${c.age}  &middot;  Brain: [${layerStr}]`;
+      `Energy: ${c.energy.toFixed(1)}  ·  Fitness: ${c.fitness.toFixed(0)}  ·  Age: ${c.age}<br>` +
+      `Speed: ${speed}  ·  Brain: [${layerStr}]`;
+  }
+
+  // ── Follow selected creature with zoom ────────────────────────────────
+  followSelected() {
+    if (this.selectedIdx >= 0 && this.selectedIdx < creatures.length) {
+      const c = creatures[this.selectedIdx];
+      this.renderer.targetCX = c.posX;
+      this.renderer.targetCY = c.posY;
+    }
   }
 
   _save() {
@@ -906,8 +1169,7 @@ class UIController {
         W: c.W.map(m => m.toJSON()),
         act: Array.from(c.act),
       })),
-      food,
-      popHerb: Array.from(popHerb.subarray(0, popCount)),
+      food, popHerb: Array.from(popHerb.subarray(0, popCount)),
       popCarn: Array.from(popCarn.subarray(0, popCount)),
       popHead, popCount,
     };
@@ -925,7 +1187,7 @@ class UIController {
       rngSeed = s.rngSeed || 1;
       food    = s.food || [];
       creatures = s.creatures.map(sc => ({
-        posX: sc.posX, posY: sc.posY, velX: sc.velX, velY: sc.velY,
+        posX: sc.posX, posY: sc.posY, velX: sc.velX || 0, velY: sc.velY || 0,
         angle: sc.angle, energy: sc.energy, fitness: sc.fitness,
         age: sc.age, type: sc.type, lineage: sc.lineage || 0,
         busyTime: sc.busyTime || 0, fadeTick: sc.fadeTick || 0,
@@ -933,6 +1195,7 @@ class UIController {
         color: sc.color || [1,1,1],
         W: sc.W.map(m => Matrix.fromJSON(m)),
         act: new Float64Array(sc.act || [0,0,0]),
+        acts: null,
       }));
       baseW = creatures[0]?.W.map(m => m.clone()) ?? baseW;
       popHead = s.popHead || 0;
@@ -945,15 +1208,16 @@ class UIController {
   }
 }
 
-// ─── Game Loop ────────────────────────────────────────────────────────────
+// ─── Game Loop ─────────────────────────────────────────────────────────────
 class GameLoop {
   constructor(renderer, ui) {
     this.renderer    = renderer;
     this.ui          = ui;
     this._rafId      = null;
     this._lastTs     = 0;
+    this._tickAccum  = 0;
     this._brainFrame = 0;
-    this._BRAIN_EVERY = 8;  // redraw brain panels every N frames
+    this._BRAIN_EVERY = 6;
   }
 
   start() {
@@ -964,32 +1228,40 @@ class GameLoop {
   _loop(ts) {
     this._rafId = requestAnimationFrame(t => this._loop(t));
 
-    const dt = Math.min(ts - this._lastTs, 100);  // cap at 100ms to survive tab-switch
+    const dt = Math.min(ts - this._lastTs, 100);
     this._lastTs = ts;
 
-    if (!this.ui.paused) {
-      // run 2 sim ticks per frame (matching graphicsStride:2)
-      simStep(); simStep();
-      tick += 2;
+    let nCarn = 0, nHerb = 0;
 
-      // record population
-      const nCarn = countType('carn');
-      const nHerb = creatures.length - nCarn;
+    if (!this.ui.paused) {
+      const tpf = this.ui.ticksPerFrame;
+      this._tickAccum += tpf;
+      const steps = Math.floor(this._tickAccum);
+      this._tickAccum -= steps;
+
+      for (let i = 0; i < steps; i++) {
+        simStep();
+        tick++;
+      }
+
+      nCarn = countType('carn');
+      nHerb = creatures.length - nCarn;
       popHerb[popHead] = nHerb;
       popCarn[popHead] = nCarn;
       popHead = (popHead + 1) % POP_MAX;
       if (popCount < POP_MAX) popCount++;
 
       this.ui.updateHeader(nHerb, nCarn);
+      this.ui.followSelected();  // keep zoom centered on creature
     }
 
-    // clamp selectedIdx if that creature died
+    // Clamp selected index if creature died
     if (this.ui.selectedIdx >= creatures.length) {
       this.ui.selectedIdx = -1;
       document.getElementById('creaturePanel').classList.remove('open');
+      this.renderer.targetZoom = 1;
     }
 
-    // top-3 by fitness
     const topIdxs = topByFitness(3);
 
     this.renderer.drawWorld(this.ui.selectedIdx);
@@ -1005,7 +1277,7 @@ class GameLoop {
     }
 
     if (creatures.length === 0) {
-      this.ui._tickEl.textContent = 'All extinct — reload to restart';
+      this.ui._tickEl.textContent = 'All extinct — tap ⚙ to restart';
       cancelAnimationFrame(this._rafId);
     }
   }
@@ -1026,7 +1298,7 @@ function topByFitness(n) {
     .map(r => r.i);
 }
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────
+// ─── Bootstrap ─────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   initWorld(1);
 
@@ -1039,7 +1311,6 @@ window.addEventListener('DOMContentLoaded', () => {
   function applyLayout() {
     const isLandscape = window.innerWidth > window.innerHeight;
     if (!isLandscape) {
-      // portrait: world canvas is a square equal to viewport width
       worldWrap.style.height = worldWrap.clientWidth + 'px';
     } else {
       worldWrap.style.height = '';
@@ -1048,23 +1319,20 @@ window.addEventListener('DOMContentLoaded', () => {
 
   function onResize() {
     applyLayout();
-    // defer canvas sizing one frame so layout has settled
     requestAnimationFrame(() => renderer.resize());
   }
 
   window.addEventListener('resize', onResize);
   window.addEventListener('orientationchange', () => setTimeout(onResize, 100));
 
-  // initial layout + resize, deferred two frames to be sure layout is ready
   requestAnimationFrame(() => {
     applyLayout();
     requestAnimationFrame(() => {
       renderer.resize();
       loop.start();
-      // hide hint after 6 seconds
       setTimeout(() => {
         document.getElementById('hint').classList.add('hidden');
-      }, 6000);
+      }, 8000);
     });
   });
 });
