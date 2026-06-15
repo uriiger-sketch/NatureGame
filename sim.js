@@ -200,33 +200,54 @@ function makeCreature(posX, posY, W, type, lineage, energy) {
     age: 0, fitness: 30,
     type,
     busyTime: 0, fadeTick: 0, fadeInit: 0, immature: 0,
+    eatCooldown: 0, deathStart: 0,
     lineage,
   };
   c.color = type === 'carn' ? [1, 0.1, 0.1] : geneColor(c);
   return c;
 }
 
-// FIX 3 — Size: 0.25× at birth, grows to 1× over 300 ticks
+// Creature shape — encodes brain complexity + weight personality in geometry
 function polyVerts(cre) {
-  const Wlast = cre.W[cre.W.length - 1];
-  const sig = Math.tanh(Wlast.sumSign() / (Wlast.data.length || 1));
-  const ns  = Math.max(3, Math.min(8, 3 + Math.round((sig + 1) * 2.5)));
-  const sG  = 0.8 + 0.6 / (1 + Math.exp(-Wlast.stdAll() * 3));
+  const W     = cre.W;
+  const Wlast = W[W.length - 1];
 
-  // Growth factor: 0.25 at birth (age=0), reaches 1.0 after ~300 ticks
+  // Sides (3–8): total hidden neurons reflects brain complexity
+  const totalHidden = W.slice(0, -1).reduce((s, m) => s + m.rows, 0);
+  const ns = Math.max(3, Math.min(8, 3 + Math.floor(totalHidden / 6)));
+
+  // Base size: average weight std across all layers
+  const allStd = W.reduce((s, m) => s + m.stdAll(), 0) / W.length;
+  const sG     = 0.7 + 0.8 / (1 + Math.exp(-allStd * 2));
+
+  // Growth: 0.25× at birth → 1.0× after 300 ticks
   const grow = 0.25 + 0.75 * Math.min(1, cre.age / 300);
 
-  let R = P.bodyRadius * sG * grow;
-  if (cre.fadeTick > 0 && cre.fadeInit > 0) R *= cre.fadeTick / cre.fadeInit;
-  else if (cre.fadeInit > 0)                 R = 0;
+  // Smooth time-based fade (real-time ms, not tick-discrete)
+  let fadeScale = 1;
+  if (cre.deathStart > 0) {
+    fadeScale = Math.max(0, 1 - (performance.now() - cre.deathStart) / 1400);
+  } else if (cre.fadeInit > 0 && cre.fadeTick === 0) {
+    return { vx: [], vy: [], R: 0 };
+  }
 
+  const Rbase = P.bodyRadius * sG * grow * fadeScale;
+  if (Rbase <= 0) return { vx: [], vy: [], R: 0 };
+
+  // Irregular per-vertex radii — each maps to a specific weight value
+  // so every creature has a recognisably unique silhouette
+  const wdata = Wlast.data;
+  const wlen  = wdata.length || 1;
   const vx = new Array(ns), vy = new Array(ns);
   for (let i = 0; i < ns; i++) {
-    const th = (i / ns) * 2 * Math.PI + cre.angle;
-    vx[i] = cre.posX + R * Math.cos(th);
-    vy[i] = cre.posY + R * Math.sin(th);
+    const th   = (i / ns) * 2 * Math.PI + cre.angle;
+    const wIdx = Math.floor(i * wlen / ns) % wlen;
+    const spike = Math.tanh(wdata[wIdx]) * 0.40;   // ±40% radius variation
+    const Ri   = Math.max(P.bodyRadius * 0.25, Rbase * (1 + spike));
+    vx[i] = cre.posX + Ri * Math.cos(th);
+    vy[i] = cre.posY + Ri * Math.sin(th);
   }
-  return { vx, vy, R };
+  return { vx, vy, R: Rbase };
 }
 
 // ─── World state ───────────────────────────────────────────────────────────
@@ -318,6 +339,7 @@ function simStep() {
   const imm      = new Float64Array(n);
   const isCarn   = new Uint8Array(n);
   const lineage  = new Int32Array(n);
+  const eatCD    = new Float64Array(n);   // cooldown ticks before carnivore can eat again
 
   for (let k = 0; k < n; k++) {
     const c = creatures[k];
@@ -328,6 +350,7 @@ function simStep() {
     age[k]  = c.age;      busy[k] = c.busyTime;
     fade[k] = c.fadeTick; fadeInit[k] = c.fadeInit;
     imm[k]  = c.immature;
+    eatCD[k] = c.eatCooldown | 0;
     isCarn[k] = c.type === 'carn' ? 1 : 0;
     lineage[k] = c.lineage | 0;
   }
@@ -335,9 +358,10 @@ function simStep() {
   for (let k = 0; k < n; k++) {
     age[k]++;
     fit[k] += P.fitTick;
-    if (busy[k] > 0) busy[k]--;
-    if (fade[k] > 0) fade[k]--;
-    if (imm[k]  > 0) imm[k]--;
+    if (busy[k]  > 0) busy[k]--;
+    if (fade[k]  > 0) fade[k]--;
+    if (imm[k]   > 0) imm[k]--;
+    if (eatCD[k] > 0) eatCD[k]--;
   }
 
   const WS = P.worldSize, SR = P.senseRadius;
@@ -451,11 +475,16 @@ function simStep() {
   }
   food = food.filter((_, f) => !eaten[f]);
 
-  // ── Predator attacks (FIX 2 — faster eating, wider attack radius) ──────
-  const EAT_TICKS  = 3;                   // was 10 — carnivore busy for only 3 ticks
-  const ATTACK_R   = P.bodyRadius * 5;    // was 2× — can eat from 5× body radius away
+  // ── Predator attacks ────────────────────────────────────────────────────
+  // EAT_TICKS: carnivore briefly frozen during kill strike
+  // EAT_COOLDOWN: ticks carnivore must wait before next attack (can still move)
+  // FADE_TICKS: sim keeps dying herb alive long enough for smooth visual fade
+  const EAT_TICKS    = 4;
+  const EAT_COOLDOWN = 36;               // total eat cycle ≈ 40 ticks
+  const ATTACK_R     = P.bodyRadius * 5;
+  const FADE_TICKS   = 30;              // creature stays in sim during visual shrink
   for (let cc = 0; cc < n; cc++) {
-    if (!isCarn[cc] || busy[cc] > 0 || fade[cc] > 0) continue;
+    if (!isCarn[cc] || busy[cc] > 0 || fade[cc] > 0 || eatCD[cc] > 0) continue;
     let bestD = ATTACK_R, bestPrey = -1;
     for (let p = 0; p < n; p++) {
       if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;
@@ -463,9 +492,11 @@ function simStep() {
       if (dist < bestD) { bestD = dist; bestPrey = p; }
     }
     if (bestPrey >= 0) {
-      busy[cc]           = EAT_TICKS;
-      fade[bestPrey]     = EAT_TICKS;
-      fadeInit[bestPrey] = EAT_TICKS;
+      busy[cc]  = EAT_TICKS;
+      eatCD[cc] = EAT_COOLDOWN;
+      fade[bestPrey]     = FADE_TICKS;
+      fadeInit[bestPrey] = FADE_TICKS;
+      creatures[bestPrey].deathStart = performance.now();  // smooth real-time fade
       E[cc] += E[bestPrey] / 2;
       fit[cc] += P.fitFood;
     }
@@ -489,9 +520,10 @@ function simStep() {
     c.energy   = E[k];   c.fitness = fit[k];
     c.age      = age[k]; c.act     = act[k];
     c.acts     = acts[k] || c.acts;
-    c.busyTime = busy[k];
-    c.fadeTick = fade[k]; c.fadeInit = fadeInit[k];
-    c.immature = imm[k];
+    c.busyTime    = busy[k];
+    c.fadeTick    = fade[k]; c.fadeInit = fadeInit[k];
+    c.immature    = imm[k];
+    c.eatCooldown = eatCD[k];
     alive.push(c);
   }
   creatures = alive;
@@ -1067,7 +1099,7 @@ class UIController {
         angle: c.angle, energy: c.energy, fitness: c.fitness,
         age: c.age, type: c.type, lineage: c.lineage,
         busyTime: c.busyTime, fadeTick: c.fadeTick, fadeInit: c.fadeInit,
-        immature: c.immature, color: c.color,
+        immature: c.immature, eatCooldown: c.eatCooldown, color: c.color,
         W: c.W.map(m => m.toJSON()), act: Array.from(c.act),
       })),
       food,
@@ -1096,6 +1128,7 @@ class UIController {
         age: sc.age, type: sc.type, lineage: sc.lineage || 0,
         busyTime: sc.busyTime || 0, fadeTick: sc.fadeTick || 0,
         fadeInit: sc.fadeInit || 0, immature: sc.immature || 0,
+        eatCooldown: sc.eatCooldown || 0, deathStart: 0,
         color: sc.color || [1,1,1],
         W: sc.W.map(m => Matrix.fromJSON(m)),
         act: new Float64Array(sc.act || [0,0,0]),
