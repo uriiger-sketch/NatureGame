@@ -226,7 +226,7 @@ function polyVerts(cre) {
   // Smooth time-based fade (real-time ms, not tick-discrete)
   let fadeScale = 1;
   if (cre.deathStart > 0) {
-    fadeScale = Math.max(0, 1 - (performance.now() - cre.deathStart) / 1400);
+    fadeScale = Math.max(0, 1 - (performance.now() - cre.deathStart) / 500);
   } else if (cre.fadeInit > 0 && cre.fadeTick === 0) {
     return { vx: [], vy: [], R: 0 };
   }
@@ -376,16 +376,16 @@ function simStep() {
     if (isCarn[h]) continue;
     let foodD2 = Infinity, fdx = 0, fdy = 0;
     for (let f = 0; f < food.length; f++) {
-      const fx = torus(posX[h] - food[f].x, WS);
-      const fy = torus(posY[h] - food[f].y, WS);
+      const fx = posX[h] - food[f].x;
+      const fy = posY[h] - food[f].y;
       const d2 = fx * fx + fy * fy;
       if (d2 < foodD2) { foodD2 = d2; fdx = fx; fdy = fy; }
     }
     let predD2 = Infinity, pdx = 0, pdy = 0;
     for (let p = 0; p < n; p++) {
       if (!isCarn[p]) continue;
-      const px = torus(posX[h] - posX[p], WS);
-      const py = torus(posY[h] - posY[p], WS);
+      const px = posX[h] - posX[p];
+      const py = posY[h] - posY[p];
       const d2 = px * px + py * py;
       if (d2 < predD2) { predD2 = d2; pdx = px; pdy = py; }
     }
@@ -402,8 +402,8 @@ function simStep() {
     let bestD = SR, bx = 0, by = 0;
     for (let p = 0; p < n; p++) {
       if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;
-      const ddx = torus(posX[p] - posX[cc], WS);
-      const ddy = torus(posY[p] - posY[cc], WS);
+      const ddx = posX[p] - posX[cc];
+      const ddy = posY[p] - posY[cc];
       const dist = hypot2(ddx, ddy);
       if (dist < bestD) { bestD = dist; bx = ddx; by = ddy; }
     }
@@ -446,11 +446,16 @@ function simStep() {
     }
   }
 
-  // ── Physics ────────────────────────────────────────────────────────────
+  // ── Physics — hard walls, bounce with 50% damping ─────────────────────
   for (let k = 0; k < n; k++) {
     if (busy[k] > 0 || fade[k] > 0) continue;
-    posX[k] = posmod(posX[k] + velX[k] * P.dt, WS);
-    posY[k] = posmod(posY[k] + velY[k] * P.dt, WS);
+    let nx = posX[k] + velX[k] * P.dt;
+    let ny = posY[k] + velY[k] * P.dt;
+    if (nx <= 0)  { nx = 0;  velX[k] =  Math.abs(velX[k]) * 0.5; }
+    if (nx >= WS) { nx = WS; velX[k] = -Math.abs(velX[k]) * 0.5; }
+    if (ny <= 0)  { ny = 0;  velY[k] =  Math.abs(velY[k]) * 0.5; }
+    if (ny >= WS) { ny = WS; velY[k] = -Math.abs(velY[k]) * 0.5; }
+    posX[k] = nx; posY[k] = ny;
     const spd = hypot2(velX[k], velY[k]);
     E[k] -= P.energyDecay + P.moveCost * spd;
     if (isCarn[k]) E[k] -= P.predMoveCost * spd;
@@ -464,8 +469,8 @@ function simStep() {
     if (isCarn[h] || fade[h] > 0) continue;
     for (let f = 0; f < food.length; f++) {
       if (eaten[f]) continue;
-      const fx = torus(posX[h] - food[f].x, WS);
-      const fy = torus(posY[h] - food[f].y, WS);
+      const fx = posX[h] - food[f].x;
+      const fy = posY[h] - food[f].y;
       if (fx * fx + fy * fy <= r2) {
         eaten[f] = 1;
         E[h] += P.foodEnergy;
@@ -476,19 +481,16 @@ function simStep() {
   food = food.filter((_, f) => !eaten[f]);
 
   // ── Predator attacks ────────────────────────────────────────────────────
-  // EAT_TICKS: carnivore briefly frozen during kill strike
-  // EAT_COOLDOWN: ticks carnivore must wait before next attack (can still move)
-  // FADE_TICKS: sim keeps dying herb alive long enough for smooth visual fade
-  const EAT_TICKS    = 4;
-  const EAT_COOLDOWN = 36;               // total eat cycle ≈ 40 ticks
-  const ATTACK_R     = P.bodyRadius * 5;
-  const FADE_TICKS   = 30;              // creature stays in sim during visual shrink
+  const EAT_TICKS    = 2;    // brief freeze during strike
+  const EAT_COOLDOWN = 5;    // short rest so carnivore moves before next eat
+  const ATTACK_R     = P.bodyRadius * 3;  // must get close; prevents trivial chain-eating
+  const FADE_TICKS   = 10;   // sim keeps dying herb long enough for 500ms visual fade
   for (let cc = 0; cc < n; cc++) {
     if (!isCarn[cc] || busy[cc] > 0 || fade[cc] > 0 || eatCD[cc] > 0) continue;
     let bestD = ATTACK_R, bestPrey = -1;
     for (let p = 0; p < n; p++) {
       if (isCarn[p] || fade[p] > 0 || imm[p] > 0) continue;
-      const dist = hypot2(torus(posX[p] - posX[cc], WS), torus(posY[p] - posY[cc], WS));
+      const dist = hypot2(posX[p] - posX[cc], posY[p] - posY[cc]);
       if (dist < bestD) { bestD = dist; bestPrey = p; }
     }
     if (bestPrey >= 0) {
@@ -553,8 +555,8 @@ function reproduce(i) {
   const mutated = mutateNetworkStructure(childW);
 
   const chi = makeCreature(
-    posmod(par.posX + Math.cos(par.angle) * P.bodyRadius * 3, P.worldSize),
-    posmod(par.posY + Math.sin(par.angle) * P.bodyRadius * 3, P.worldSize),
+    Math.max(0, Math.min(P.worldSize, par.posX + Math.cos(par.angle) * P.bodyRadius * 3)),
+    Math.max(0, Math.min(P.worldSize, par.posY + Math.sin(par.angle) * P.bodyRadius * 3)),
     mutated, par.type, par.lineage, eHalf,
   );
   chi.fitness  = par.fitness / 2;
@@ -652,6 +654,12 @@ class Renderer {
       ctx.arc(fx, fy, 2.5, 0, 6.2832);
     }
     ctx.fill();
+
+    // World border
+    ctx.strokeStyle = '#1a2a40';
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(this.offsetX, this.offsetY,
+                   P.worldSize * this.scale, P.worldSize * this.scale);
 
     // Creatures
     for (let k = 0; k < creatures.length; k++) {
@@ -1045,7 +1053,7 @@ class UIController {
     let bestD = hitR, bestK = -1;
     for (let k = 0; k < creatures.length; k++) {
       const c = creatures[k];
-      const dist = hypot2(torus(x - c.posX, P.worldSize), torus(y - c.posY, P.worldSize));
+      const dist = hypot2(x - c.posX, y - c.posY);
       if (dist < bestD) { bestD = dist; bestK = k; }
     }
 
@@ -1060,11 +1068,11 @@ class UIController {
   _showInfo() {
     this._brainsRow.style.display = 'none';
     this._infoPanel.classList.add('open');
-    // brainDetail had display:none → clientWidth was 0 → resize after DOM reflow
-    requestAnimationFrame(() => {
-      this.renderer.resize();
-      this.renderer._lastSel = -1;   // force immediate redraw
-    });
+    // Reading offsetHeight flushes pending CSS layout synchronously,
+    // so clientWidth on brainDetail is non-zero before resize() runs.
+    void this._infoPanel.offsetHeight;
+    this.renderer.resize();
+    this.renderer._lastSel = -1;
   }
 
   _closePanel() {
