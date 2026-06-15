@@ -743,7 +743,14 @@ class Renderer {
 
   // ── Brain diagram ──────────────────────────────────────────────────────
   drawBrain(ctx, cre, w, h, detail) {
+    // Background
     ctx.clearRect(0, 0, w, h);
+    const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.hypot(w, h) * 0.62);
+    bg.addColorStop(0, detail ? '#0c0c2a' : '#080818');
+    bg.addColorStop(1, '#040410');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
     if (!cre || !w || !h) return;
 
     const W    = cre.W;
@@ -754,140 +761,142 @@ class Renderer {
     for (let l = 0; l < L; l++) layers.push(W[l].rows);
     layers.push(W[W.length - 1].rows);
 
-    const nL   = layers.length;
-    const xGap = w / (nL + 1);
-    const xPos = layers.map((_, li) => xGap * (li + 1));
+    const nL    = layers.length;
+    const maxN  = Math.max(...layers);
+    const MAX_VIS = detail ? 24 : 20;
+
+    // Layout: layers left → right, neurons top → bottom
+    const padX = detail ? 32 : 14;
+    const padY = detail ? 30 : 10;
+    const xGap = (w - padX * 2) / Math.max(1, nL - 1);
+    const xPos = layers.map((_, li) => padX + li * xGap);
     const yPos = layers.map(cnt => {
-      const gap = h / (cnt + 1);
-      return Array.from({ length: cnt }, (_, i) => gap * (i + 1));
+      const avail   = h - padY * 2;
+      const spacing = cnt > 1 ? avail / (cnt - 1) : 0;
+      return Array.from({ length: cnt }, (_, i) =>
+        cnt === 1 ? h / 2 : padY + i * spacing);
     });
 
-    const MAX_VIS = 28;
+    // Radius that fits in both dimensions without overlap
+    const nodeR = detail
+      ? Math.max(8,  Math.min(16, xGap * 0.28, (h - padY * 2) / Math.max(maxN - 1, 1) * 0.40))
+      : Math.max(5,  Math.min(11, xGap * 0.30, (h - padY * 2) / Math.max(maxN - 1, 1) * 0.40));
 
-    if (detail) {
-      // Rich view for selected creature (shown in sidebar creatureInfo panel)
-      const INPUT_LABELS  = ['dx', 'dy', 'dist', 'nrg', '1'];
-      const OUTPUT_LABELS = ['mode', 'push', 'rep'];
+    // ── Edges ───────────────────────────────────────────────────────────
+    for (let li = 0; li < nL - 1; li++) {
+      const sN = layers[li], dN = layers[li + 1];
+      if (sN > MAX_VIS || dN > MAX_VIS) continue;
+      const actSrc = acts ? acts[li] : null;
 
-      // Edges: green=positive, red=negative, width ∝ magnitude
-      for (let li = 0; li < nL - 1; li++) {
-        const sN = layers[li], dN = layers[li + 1];
-        if (sN > MAX_VIS || dN > MAX_VIS) continue;
-        for (let s = 0; s < sN; s++) {
-          for (let dst = 0; dst < dN; dst++) {
-            const wv  = W[li].get(dst, s);
-            const mag = Math.abs(wv);
-            if (mag < 0.06) continue;
-            const alpha = Math.min(0.85, mag * 0.9);
-            const lw    = Math.max(0.4, Math.min(3.5, mag * 2.8));
-            ctx.strokeStyle = wv > 0
-              ? `rgba(40,210,90,${alpha})`
-              : `rgba(220,55,55,${alpha})`;
-            ctx.lineWidth = lw;
-            ctx.beginPath();
-            ctx.moveTo(xPos[li], yPos[li][s]);
-            ctx.lineTo(xPos[li + 1], yPos[li + 1][dst]);
-            ctx.stroke();
-          }
-        }
-      }
+      for (let s = 0; s < sN; s++) {
+        for (let dst = 0; dst < dN; dst++) {
+          const wv  = W[li].get(dst, s);
+          const mag = Math.abs(wv);
+          if (mag < 0.05) continue;
 
-      const nodeR = Math.max(5, Math.min(13, xGap * 0.26));
-      const FONT  = `bold ${Math.max(7, Math.round(nodeR * 0.85))}px -apple-system,sans-serif`;
+          const srcAct = actSrc ? Math.abs(actSrc[s]) : 0;
+          const alpha  = Math.min(0.9, mag * 0.62 + srcAct * 0.28 + 0.07);
+          const lw     = detail
+            ? Math.max(0.5, Math.min(3.5, mag * 2.2 + srcAct * 0.9))
+            : Math.max(0.4, Math.min(2.0, mag * 1.5));
 
-      for (let li = 0; li < nL; li++) {
-        const cnt    = layers[li];
-        const actArr = acts ? acts[li] : null;
+          ctx.strokeStyle = wv > 0 ? `rgba(40,215,90,${alpha})` : `rgba(220,58,55,${alpha})`;
+          ctx.lineWidth = lw;
 
-        for (let ni = 0; ni < cnt; ni++) {
-          if (cnt > MAX_VIS) {
-            ctx.fillStyle = '#444466';
-            ctx.font = `${Math.round(nodeR * 1.8)}px sans-serif`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(`×${cnt}`, xPos[li], h / 2);
-            break;
-          }
+          const x1 = xPos[li],     y1 = yPos[li][s];
+          const x2 = xPos[li + 1], y2 = yPos[li + 1][dst];
 
-          const x   = xPos[li], y = yPos[li][ni];
-          const act = actArr ? actArr[ni] : 0;
-          const absAct = Math.abs(act);
-
-          if (absAct > 0.3) {
-            ctx.shadowColor = act > 0 ? '#44ff88' : '#ff4444';
-            ctx.shadowBlur  = nodeR * absAct * 1.4;
-          }
-
-          let fillColor;
-          if (li === 0)        fillColor = '#1a3a8a';
-          else if (li === nL-1) fillColor = '#7a3000';
-          else {
-            const L_pct = Math.round(12 + ((act + 1) / 2) * 55);
-            fillColor = `hsl(230,60%,${L_pct}%)`;
-          }
-          ctx.beginPath(); ctx.arc(x, y, nodeR, 0, 6.2832);
-          ctx.fillStyle = fillColor; ctx.fill();
-          ctx.shadowBlur = 0;
-
-          if (actArr) {
-            ctx.beginPath(); ctx.arc(x, y, nodeR * 0.55, 0, 6.2832);
-            ctx.fillStyle = act > 0
-              ? `rgba(60,255,120,${Math.min(0.9, act * 1.1)})`
-              : `rgba(255,60,60,${Math.min(0.9, -act * 1.1)})`;
-            ctx.fill();
-          }
-
-          ctx.beginPath(); ctx.arc(x, y, nodeR, 0, 6.2832);
-          ctx.strokeStyle = li === 0 ? '#4488ff' : li === nL-1 ? '#ff8833' : '#555588';
-          ctx.lineWidth = 1.2; ctx.stroke();
-
-          ctx.font = FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-          if (li === 0 && ni < INPUT_LABELS.length) {
-            ctx.fillStyle = '#7799cc';
-            ctx.fillText(INPUT_LABELS[ni], x, y + nodeR + 2);
-          } else if (li === nL - 1 && ni < OUTPUT_LABELS.length) {
-            ctx.fillStyle = '#cc7733';
-            ctx.fillText(OUTPUT_LABELS[ni], x, y + nodeR + 2);
-          }
-        }
-      }
-    } else {
-      // Fast mini view for the top-3 panels
-      ctx.lineWidth = 0.7;
-      for (let li = 0; li < nL - 1; li++) {
-        const sN = layers[li], dN = layers[li + 1];
-        if (sN > MAX_VIS || dN > MAX_VIS) continue;
-        const buckets = {};
-        for (let s = 0; s < sN; s++) {
-          for (let dst = 0; dst < dN; dst++) {
-            const wv  = W[li].get(dst, s);
-            const col = wv > 0 ? '#2a9' : '#933';
-            (buckets[col] = buckets[col] || []).push(
-              xPos[li], yPos[li][s], xPos[li+1], yPos[li+1][dst]);
-          }
-        }
-        for (const [col, pts] of Object.entries(buckets)) {
-          ctx.strokeStyle = col; ctx.beginPath();
-          for (let p = 0; p < pts.length; p += 4) {
-            ctx.moveTo(pts[p], pts[p+1]); ctx.lineTo(pts[p+2], pts[p+3]);
+          ctx.beginPath();
+          if (detail) {
+            const cpx = (x1 + x2) / 2;
+            ctx.moveTo(x1, y1);
+            ctx.bezierCurveTo(cpx, y1, cpx, y2, x2, y2);
+          } else {
+            ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
           }
           ctx.stroke();
         }
       }
-      const nodeR = Math.max(2, Math.min(5, xGap * 0.18));
-      for (let li = 0; li < nL; li++) {
-        if (layers[li] > 40) {
-          ctx.fillStyle = '#445566';
-          ctx.font = `${Math.round(nodeR * 2.5)}px sans-serif`;
-          ctx.fillText(`×${layers[li]}`, xPos[li] - nodeR * 2, h / 2);
-          continue;
+    }
+
+    // ── Nodes ───────────────────────────────────────────────────────────
+    const INPUT_LABELS  = ['Δx', 'Δy', 'd', 'E', '1'];
+    const OUTPUT_LABELS = ['steer', 'fwd', 'rep'];
+    const fSize = Math.max(7, Math.round(nodeR * 0.72));
+    const FONT  = `${fSize}px -apple-system,sans-serif`;
+    const LFONT = `bold ${Math.max(8, Math.round(nodeR * 0.80))}px -apple-system,sans-serif`;
+
+    for (let li = 0; li < nL; li++) {
+      const cnt    = layers[li];
+      const actArr = acts ? acts[li] : null;
+      const isIn   = li === 0;
+      const isOut  = li === nL - 1;
+
+      if (cnt > MAX_VIS) {
+        ctx.fillStyle = '#446688';
+        ctx.font = `bold ${nodeR * 1.8}px -apple-system,sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`×${cnt}`, xPos[li], h / 2);
+        continue;
+      }
+
+      // Layer label
+      if (detail) {
+        ctx.font = LFONT; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillStyle = isIn ? '#4477cc' : isOut ? '#cc6622' : '#445588';
+        ctx.fillText(isIn ? 'IN' : isOut ? 'OUT' : `H${li}`, xPos[li], padY - 5);
+      }
+
+      for (let ni = 0; ni < cnt; ni++) {
+        const x      = xPos[li], y = yPos[li][ni];
+        const act    = actArr ? actArr[ni] : 0;
+        const absAct = Math.abs(act);
+
+        // Glow
+        if (absAct > 0.12) {
+          ctx.shadowColor = act > 0 ? '#55ffaa' : '#ff5544';
+          ctx.shadowBlur  = nodeR * (detail ? absAct * 3.2 : absAct * 2.0);
         }
-        ctx.fillStyle = li === 0 ? '#3366aa' : li === nL-1 ? '#aa6622' : '#888';
-        ctx.beginPath();
-        for (let ni = 0; ni < layers[li]; ni++) {
-          ctx.moveTo(xPos[li] + nodeR, yPos[li][ni]);
-          ctx.arc(xPos[li], yPos[li][ni], nodeR, 0, 6.2832);
+
+        // Node fill
+        let fill;
+        if (isIn)       fill = `hsl(220,70%,${18 + absAct * 22}%)`;
+        else if (isOut) fill = `hsl(25,80%,${14 + absAct * 26}%)`;
+        else {
+          const lp = Math.round(13 + ((act + 1) / 2) * 50);
+          fill = `hsl(240,55%,${lp}%)`;
         }
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, nodeR, 0, 6.2832);
+        ctx.fillStyle = fill; ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Activation inner dot
+        if (actArr && absAct > 0.05) {
+          ctx.beginPath(); ctx.arc(x, y, nodeR * 0.50, 0, 6.2832);
+          ctx.fillStyle = act > 0
+            ? `rgba(60,255,130,${Math.min(0.92, absAct * 1.3)})`
+            : `rgba(255,70,60,${Math.min(0.92,  absAct * 1.3)})`;
+          ctx.fill();
+        }
+
+        // Ring
+        ctx.beginPath(); ctx.arc(x, y, nodeR, 0, 6.2832);
+        ctx.strokeStyle = isIn ? '#5599ff' : isOut ? '#ff9944'
+          : `rgba(110,110,180,${0.45 + absAct * 0.55})`;
+        ctx.lineWidth = detail ? 1.5 : 0.8;
+        ctx.stroke();
+
+        // Labels
+        if (detail) {
+          ctx.font = FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+          if (isIn && ni < INPUT_LABELS.length) {
+            ctx.fillStyle = '#7799cc';
+            ctx.fillText(INPUT_LABELS[ni], x, y + nodeR + 2);
+          } else if (isOut && ni < OUTPUT_LABELS.length) {
+            ctx.fillStyle = '#cc8844';
+            ctx.fillText(OUTPUT_LABELS[ni], x, y + nodeR + 2);
+          }
+        }
       }
     }
   }
@@ -1048,10 +1057,14 @@ class UIController {
     }
   }
 
-  // FIX 5: show creature info inside sidebar (never covers world canvas)
   _showInfo() {
     this._brainsRow.style.display = 'none';
     this._infoPanel.classList.add('open');
+    // brainDetail had display:none → clientWidth was 0 → resize after DOM reflow
+    requestAnimationFrame(() => {
+      this.renderer.resize();
+      this.renderer._lastSel = -1;   // force immediate redraw
+    });
   }
 
   _closePanel() {
@@ -1196,8 +1209,9 @@ class GameLoop {
     this.renderer.drawPopGraph();
 
     this._brainFrame++;
+    const brainEvery = selectedIdx >= 0 ? 2 : this._BRAIN_EVERY;
     const brainDirty = selectedIdx !== this.renderer._lastSel;
-    if (brainDirty || this._brainFrame % this._BRAIN_EVERY === 0) {
+    if (brainDirty || this._brainFrame % brainEvery === 0) {
       this.renderer.drawBrainPanels(topIdxs, selectedIdx);
       this.ui.updateBrainLabels(topIdxs);
       if (selectedIdx >= 0) this.ui.updatePanelStats();
